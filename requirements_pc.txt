@@ -1,0 +1,11 @@
+# AuralAI SDK — PC/Laptop dependencies
+# Install dengan: pip install -r requirements_pc.txt
+
+# Audio generation (generate_audio.py)
+gtts>=2.5.0
+
+# Deploy script (deploy.py)
+paramiko>=3.4.0
+
+# Optional: untuk development dan testing
+requests>=2.31.0

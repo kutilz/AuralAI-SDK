@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AuralAI Dev Dashboard</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app">
+
+    <!-- HEADER -->
+    <header class="header">
+      <div class="header-left">
+        <div class="logo">
+          <span class="logo-icon">◎</span>
+          <span class="logo-text">AuralAI <span class="logo-sub">Dev Dashboard</span></span>
+        </div>
+      </div>
+      <div class="header-right">
+        <div class="device-info">
+          <span class="device-name" id="deviceName">maixcam.local:8080</span>
+        </div>
+        <div class="status-badge" id="statusBadge">
+          <span class="status-dot" id="statusDot"></span>
+          <span id="statusText">Connecting...</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- MAIN GRID -->
+    <main class="main-grid">
+
+      <!-- LEFT: Camera Panel -->
+      <section class="panel camera-panel">
+        <div class="panel-header">
+          <span class="panel-title">Camera Preview</span>
+          <div class="camera-meta">
+            <span class="badge" id="fpsCounter">-- fps</span>
+            <span class="badge badge-dim" id="resLabel">320×224</span>
+          </div>
+        </div>
+        <div class="camera-frame" id="cameraFrame">
+          <img id="cameraImg" src="" alt="Camera Feed" style="display:none;" />
+          <canvas id="cameraCanvas" width="320" height="224"></canvas>
+          <div class="camera-overlay" id="overlayDetections"></div>
+          <div class="camera-scanline"></div>
+        </div>
+        <div class="camera-footer">
+          <div class="refresh-info">
+            <span class="dot-pulse" id="refreshPulse"></span>
+            <span id="refreshLabel">Refreshing every 500ms</span>
+          </div>
+          <label class="toggle-wrap">
+            <input type="checkbox" id="overlayToggle" checked />
+            <span>Show Boxes</span>
+          </label>
+        </div>
+      </section>
+
+      <!-- RIGHT: Info Panel -->
+      <section class="panel info-panel">
+
+        <!-- Mode Switcher -->
+        <div class="mode-switcher">
+          <span class="mode-label">MODE:</span>
+          <button class="mode-btn active" id="btnExplorer" onclick="setMode('explorer')">Explorer</button>
+          <button class="mode-btn" id="btnContext" onclick="setMode('context')">Context</button>
+          <button class="mode-btn" id="btnQris" onclick="setMode('qris')">Scan QRIS</button>
+        </div>
+
+        <!-- Detection List -->
+        <div class="info-section">
+          <div class="section-title">
+            <span>Detections</span>
+            <span class="badge" id="detectionCount">0</span>
+          </div>
+          <div class="detection-list" id="detectionList">
+            <div class="detection-empty">Waiting for detections...</div>
+          </div>
+        </div>
+
+        <!-- Audio Simulator -->
+        <div class="info-section">
+          <div class="section-title">
+            <span>Audio Sim</span>
+            <span class="badge badge-green" id="audioStatus">Ready</span>
+          </div>
+          <div class="audio-display" id="audioDisplay">
+            <span class="audio-icon">🔊</span>
+            <span id="audioText">—</span>
+          </div>
+          <div class="audio-queue" id="audioQueue"></div>
+        </div>
+
+        <!-- AI Focus Status -->
+        <div class="info-section" id="focusSection" style="display:none;">
+          <div class="section-title">
+            <span>AI Focus Active</span>
+            <span class="badge badge-orange" id="focusTimer">5s</span>
+          </div>
+          <div class="focus-bar">
+            <div class="focus-progress" id="focusProgress"></div>
+          </div>
+        </div>
+
+      </section>
+    </main>
+
+    <!-- CONTROLS BAR -->
+    <div class="controls-bar">
+      <div class="controls-label">CONTROLS:</div>
+      <div class="controls-group">
+        <button class="ctrl-btn ctrl-focus" onclick="cmdAIFocus()" id="btnAiFocus">
+          <span class="ctrl-icon">⚡</span> AI Focus 5s
+        </button>
+        <button class="ctrl-btn ctrl-capture" onclick="cmdCapture()">
+          <span class="ctrl-icon">📷</span> Capture
+        </button>
+        <button class="ctrl-btn ctrl-qris" onclick="cmdQris()">
+          <span class="ctrl-icon">⬛</span> Scan QRIS
+        </button>
+        <button class="ctrl-btn ctrl-describe" onclick="cmdDescribe()">
+          <span class="ctrl-icon">💬</span> Describe Scene
+        </button>
+        <button class="ctrl-btn ctrl-bench" onclick="cmdBenchmark()">
+          <span class="ctrl-icon">⏱</span> Benchmark
+        </button>
+      </div>
+    </div>
+
+    <!-- LATENCY MONITOR -->
+    <div class="latency-bar">
+      <div class="latency-label">LATENCY:</div>
+      <div class="latency-items">
+        <div class="lat-item">
+          <span class="lat-key">Camera</span>
+          <span class="lat-val" id="latCamera">--ms</span>
+        </div>
+        <div class="lat-sep">|</div>
+        <div class="lat-item">
+          <span class="lat-key">Inference</span>
+          <span class="lat-val" id="latInference">--ms</span>
+        </div>
+        <div class="lat-sep">|</div>
+        <div class="lat-item">
+          <span class="lat-key">Postproc</span>
+          <span class="lat-val" id="latPostproc">--ms</span>
+        </div>
+        <div class="lat-sep">|</div>
+        <div class="lat-item lat-total">
+          <span class="lat-key">Total</span>
+          <span class="lat-val" id="latTotal">--ms</span>
+        </div>
+        <div class="lat-sep">|</div>
+        <div class="lat-item">
+          <span class="lat-key">FPS Est.</span>
+          <span class="lat-val" id="latFps">--</span>
+        </div>
+      </div>
+      <div class="latency-bar-graph">
+        <div class="bar-segment bar-camera" id="barCamera"></div>
+        <div class="bar-segment bar-inference" id="barInference"></div>
+        <div class="bar-segment bar-postproc" id="barPostproc"></div>
+      </div>
+    </div>
+
+    <!-- LOG PANEL -->
+    <div class="log-panel">
+      <div class="log-header">
+        <span class="log-title">LOG</span>
+        <div class="log-controls">
+          <label class="toggle-wrap">
+            <input type="checkbox" id="autoScrollToggle" checked />
+            <span>Auto-scroll</span>
+          </label>
+          <button class="log-clear-btn" onclick="clearLogs()">Clear</button>
+        </div>
+      </div>
+      <div class="log-body" id="logBody"></div>
+    </div>
+
+    <!-- MOCK MODE BANNER -->
+    <div class="mock-banner" id="mockBanner">
+      <span class="mock-icon">🖥</span>
+      <span><strong>MOCKUP MODE</strong> — Simulasi berjalan di browser. Hubungkan ke MaixCAM untuk data nyata.</span>
+      <button class="mock-close" onclick="document.getElementById('mockBanner').style.display='none'">✕</button>
+    </div>
+
+  </div>
+
+  <script src="dashboard.js"></script>
+</body>
+</html>

@@ -1,0 +1,54 @@
+# ─── Environment & Secrets ────────────────────────────────────────────────────
+.env
+*.env
+/root/.env
+secrets.py
+
+# ─── Model Files (besar, download manual dari MaixHub) ────────────────────────
+models/*.mud
+models/*.onnx
+models/*.tflite
+models/*.pt
+!models/.gitkeep
+
+# ─── Generated Audio WAV ──────────────────────────────────────────────────────
+audio/*.wav
+!audio/.gitkeep
+
+# ─── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+/root/logs/
+
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# ─── Virtual Environments ─────────────────────────────────────────────────────
+venv/
+env/
+.venv/
+.env/
+
+# ─── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── IDE ──────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ─── Captures (foto dari MaixCAM) ─────────────────────────────────────────────
+captures/
+*.jpg
+*.jpeg
+*.png
