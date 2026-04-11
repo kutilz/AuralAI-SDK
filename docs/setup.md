@@ -41,9 +41,20 @@ python tools/generate_audio.py --dry-run
 
 ## 3. Download Model
 
+### Untuk `device/main.py` (orchestrator + YOLOv8)
+
 1. Buka [MaixHub Model Zoo](https://maixhub.com/model/zoo/196)
 2. Download **YOLO11n COCO 320×224** (format `.mud`)
-3. Simpan sebagai `models/yolo11n.mud`
+3. Simpan sebagai `models/yolo11n.mud` dan sesuaikan `MODEL_PATH` di `device/config.py`
+
+### Untuk `device/sonara_maix.py` (stack MVP / YOLOv5)
+
+Script mencoba memuat (berurutan):
+
+- `/root/models/yolov5s_320x224_int8.cvimodel`
+- `/root/models/yolov5s.mud`
+
+Unduh model YOLOv5 COCO 320×224 yang kompatibel MaixPy dari MaixHub, lalu letakkan di salah satu path di atas di MaixCAM.
 
 ---
 
@@ -118,9 +129,57 @@ http://192.168.1.XXX:8080
 
 ---
 
-## 8. Mockup Preview (Tanpa MaixCAM)
+## 8. Sonara Companion — stack MVP (MaixCAM + PC)
 
-Untuk preview Web UI di browser tanpa hardware:
+Arsitektur ini memisahkan **inferensi ringan (YOLO di MaixCAM)** dan **OpenAI Vision / TTS di browser** pada **laptop** yang menjalankan Flask (`companion/webserver.py`). Pola ini selaras dengan dokumentasi MaixPy: HTTP memakai modul `requests` di perangkat.
+
+### 8a. PC (laptop)
+
+```bash
+cd aural-ai-sdk
+pip install -r requirements_pc.txt
+cp companion/.env.example companion/.env    # Windows: copy companion\.env.example companion\.env
+# Edit companion/.env — set OPENAI_API_KEY
+
+python companion/webserver.py
+```
+
+Catat **IP LAN** yang ditampilkan di terminal (misalnya `192.168.1.78`).
+
+### 8b. MaixCAM
+
+Set environment **sebelum** menjalankan `sonara_maix.py` (di MaixVision bisa lewat shell atau wrapper):
+
+| Variabel | Contoh | Fungsi |
+|----------|--------|--------|
+| `AURAL_WIFI_SSID` | nama AP | Kosongkan untuk lewati `Wifi.connect` (misalnya WiFi sudah tersambung) |
+| `AURAL_WIFI_PASSWORD` | (password) | — |
+| `AURAL_COMPANION_HOST` | IP laptop | Harus sama subnet dengan MaixCAM |
+| `AURAL_COMPANION_PORT` | `5000` | Port Flask companion |
+
+Jalankan di MaixCAM (path setelah deploy ke `/root/aural-ai/`):
+
+```bash
+cd /root/aural-ai/
+export AURAL_COMPANION_HOST=192.168.x.x
+python sonara_maix.py
+```
+
+Dashboard observer: `http://<IP-PC>:5000` (buka dari HP / browser di jaringan yang sama).
+
+### 8c. Uji tanpa MaixCAM (webcam PC)
+
+Dengan `webserver.py` tetap berjalan:
+
+```bash
+python companion/run_desktop.py
+```
+
+---
+
+## 9. Mockup Preview (Tanpa MaixCAM)
+
+Untuk preview Web UI dashboard **on-device** di browser tanpa hardware:
 
 1. Buka `device/server/static/index.html` langsung di browser
 2. Dashboard akan berjalan dalam **MOCK MODE** — semua data disimulasikan

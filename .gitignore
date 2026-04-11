@@ -47,8 +47,9 @@ desktop.ini
 *.swp
 *.swo
 
-# ─── Captures (foto dari MaixCAM) ─────────────────────────────────────────────
+# ─── Captures (foto dari MaixCAM / companion) ────────────────────────────────
 captures/
+companion/captures/
 *.jpg
 *.jpeg
 *.png

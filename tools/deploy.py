@@ -156,7 +156,8 @@ def main():
     if not args.dry_run:
         print(f"\nJalankan di MaixCAM:")
         print(f"  cd {REMOTE_DEVICE_DIR} && python main.py")
-        print(f"\nAtau via MaixVision: buka main.py → Run")
+        print(f"  # Stack Sonara + companion PC: python sonara_maix.py (set AURAL_COMPANION_HOST)")
+        print(f"\nAtau via MaixVision: buka main.py atau sonara_maix.py → Run")
 
 
 if __name__ == "__main__":

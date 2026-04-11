@@ -5,6 +5,9 @@ Dijalankan di MaixCAM via MaixVision atau: python main.py
 Memulai dua thread utama:
   1. AI Loop  — camera → inference → result queue
   2. Web Server — HTTP + snapshot endpoint
+
+Alternatif stack MVP (MaixCAM + companion PC + OpenAI): jalankan `sonara_maix.py`
+dan ikuti docs/setup.md bagian «Sonara Companion».
 """
 
 import threading
