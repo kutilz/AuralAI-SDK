@@ -6,8 +6,8 @@ Memulai dua thread utama:
   1. AI Loop  — camera → inference → result queue
   2. Web Server — HTTP + snapshot endpoint
 
-Alternatif stack MVP (MaixCAM + companion PC + OpenAI): jalankan `sonara_maix.py`
-dan ikuti docs/setup.md bagian «Sonara Companion».
+Alternatif stack MVP (MaixCAM + companion PC + OpenAI): jalankan `aural_maix.py`
+dan ikuti docs/setup.md bagian «Companion PC».
 """
 
 import threading

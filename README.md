@@ -10,7 +10,7 @@
 | Phase | Fitur | Status |
 |-------|-------|--------|
 | **0** | Web Dashboard, Camera Preview, Log Stream | ✅ Ready |
-| **0b** | Sonara Companion (MaixCAM + PC Flask, MVP teruji) | ✅ Terintegrasi di `companion/` + `sonara_maix.py` |
+| **0b** | Companion PC (MaixCAM + Flask, MVP teruji) | ✅ `companion/` + `device/aural_maix.py` |
 | **1** | Object Detection (YOLO11n COCO), Audio Output, AI Focus Mode | 🔧 In Progress |
 | **2** | Scene Description (OpenAI Vision), QRIS Verifier | 📋 Planned |
 | **3** | Custom Model Pipeline, Dataset Capture Tool | 📋 Planned |
@@ -30,14 +30,14 @@ MaixCAM Device
                               AuralAI Dev Dashboard
 ```
 
-**Jalur B — Sonara Companion** (`device/sonara_maix.py` + `companion/webserver.py`, dari MVP teruji):
+**Jalur B — Companion PC** (`device/aural_maix.py` + `companion/webserver.py`):
 
 ```
 MaixCAM (UI layar + YOLO lokal) ──HTTP──► PC Flask (OpenAI Vision, MJPEG, TTS browser)
                               └──► Browser observer (http://IP-PC:5000)
 ```
 
-Detail setup: [docs/setup.md](docs/setup.md) bagian *Sonara Companion*.
+Detail setup: [docs/setup.md](docs/setup.md) bagian *Companion PC* dan *Uji jaringan*.
 
 ---
 
@@ -65,7 +65,7 @@ python tools/deploy.py
 
 Buka `device/server/static/index.html` langsung di browser — dashboard berjalan penuh dalam mode simulasi.
 
-### Sonara Companion (MVP + OpenAI di PC)
+### Companion PC (MVP + OpenAI di PC)
 
 ```bash
 pip install -r requirements_pc.txt
@@ -75,7 +75,7 @@ python companion/webserver.py
 python companion/run_desktop.py            # opsional: simulasi webcam
 ```
 
-Di MaixCAM set `AURAL_COMPANION_HOST` ke IP PC lalu jalankan `sonara_maix.py` (lihat [docs/setup.md](docs/setup.md)).
+Di MaixCAM set `AURAL_COMPANION_HOST` ke **IPv4 Wi‑Fi/Ethernet PC** (bukan IP WSL), lalu `python aural_maix.py` — lihat [docs/setup.md](docs/setup.md).
 
 ---
 
@@ -83,13 +83,16 @@ Di MaixCAM set `AURAL_COMPANION_HOST` ke IP PC lalu jalankan `sonara_maix.py` (l
 
 ```
 aural-ai-sdk/
-├── companion/                # Server PC + runner desktop (stack Sonara / MVP)
+├── companion/                # Server PC + runner desktop (MVP)
 │   ├── webserver.py          # Flask + dashboard + API untuk device
+│   ├── minimal_server.py     # Uji koneksi MaixCAM ↔ PC (tanpa OpenAI)
 │   ├── run_desktop.py        # Simulasi MaixCAM dengan webcam
 │   └── .env.example
 ├── device/                   # Kode untuk MaixCAM (Python/MaixPy)
 │   ├── main.py               # Entry point
-│   ├── sonara_maix.py        # Entry alternatif: UI + YOLO + hub ke companion
+│   ├── aural_maix.py         # Entry alternatif: UI + YOLO + hub ke companion
+│   ├── wifi_connect.py       # Helper WiFi (pola resmi MaixPy, dipakai probe + aural_maix)
+│   ├── network_probe.py      # Uji HTTP ke PC (pakai dengan minimal_server)
 │   ├── config.py             # Semua konstanta
 │   ├── core/
 │   │   ├── orchestrator.py   # State machine, shared state

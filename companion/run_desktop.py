@@ -1,5 +1,5 @@
 """
-Sonara Desktop Runner — Web-Controlled (bagian AuralAI SDK / companion)
+AuralAI Desktop Runner — Web-Controlled (companion)
 =======================================================================
 Jalankan dari root repo setelah `python companion/webserver.py` aktif.
 Browser terbuka ke dashboard; kontrol mode & scan dari browser.
@@ -13,6 +13,8 @@ Opsional (deteksi YOLO lokal di Mode Auto):
 import cv2
 import numpy as np
 import requests
+
+from detection_calibration import parse_remote_settings
 import threading
 import base64
 import time
@@ -38,7 +40,6 @@ CAM_W, CAM_H     = 320, 224
 NAV_H            = 22
 HEADER_H         = 22
 BLUR_THRESHOLD   = 50.0
-AREA_TOO_CLOSE   = 0.5
 
 MODE_MENU   = 0
 MODE_OBJECT = 1
@@ -113,7 +114,7 @@ def draw_bottom(img, text, color=None):
 
 def draw_menu_overlay(img):
     cv_fill(img, 0, 0, CAM_W, 28, C_DKGRAY)
-    cv_text(img, CAM_W // 2 - 28, 6, "SONARA", C_CYAN, scale=1.5)
+    cv_text(img, CAM_W // 2 - 36, 6, "AURALAI", C_CYAN, scale=1.5)
     cv_text(img, CAM_W - 95, 9, "Desktop Mode", C_GREEN, scale=1)
     entries = [
         (30,  78,  C_BLUE,   "1. Deteksi Objek",   "Otomatis & terus-menerus"),
@@ -203,9 +204,9 @@ try:
     from ultralytics import YOLO
     yolo_model = YOLO("yolov8n.pt")
     YOLO_OK    = True
-    print("[Sonara] YOLO berhasil dimuat (ultralytics yolov8n)")
+    print("[AuralAI] YOLO berhasil dimuat (ultralytics yolov8n)")
 except Exception:
-    print("[Sonara] INFO: ultralytics tidak ada — Mode Auto berjalan tanpa deteksi lokal")
+    print("[AuralAI] INFO: ultralytics tidak ada — Mode Auto berjalan tanpa deteksi lokal")
     print("         Pasang dengan:  pip install ultralytics")
 
 # ============================================================
@@ -217,7 +218,7 @@ try:
 except ImportError:
     _psutil   = None
     PSUTIL_OK = False
-    print("[Sonara] INFO: psutil tidak ada — telemetry baterai/suhu tidak tersedia")
+    print("[AuralAI] INFO: psutil tidak ada — telemetry baterai/suhu tidak tersedia")
     print("         Pasang dengan:  pip install psutil")
 
 # ============================================================
@@ -237,13 +238,14 @@ _blur_thresh = 50.0
 _last_ping_ms      = None
 _last_inference_ms = None   # YOLO inference time
 _show_bbox         = True   # dari server settings
+_rt_cal             = parse_remote_settings({})
 
 # ============================================================
 # WEBCAM SETUP
 # ============================================================
 cap = cv2.VideoCapture(0)
 if not cap.isOpened():
-    print("[Sonara] WARN: Webcam tidak ditemukan — pakai frame hitam")
+    print("[AuralAI] WARN: Webcam tidak ditemukan — pakai frame hitam")
 
 def read_frame():
     ret, frame = cap.read()
@@ -262,7 +264,7 @@ def _post(url, payload, timeout=2.0):
 
 def notify_mode(mode_id):
     _post(API_MODE, {"mode": mode_id, "name": MODE_LABELS.get(mode_id, "")})
-    print(f"[Sonara] Mode -> {MODE_LABELS.get(mode_id, mode_id)}")
+    print(f"[AuralAI] Mode -> {MODE_LABELS.get(mode_id, mode_id)}")
 
 def _read_telemetry():
     """Baca baterai, WiFi, CPU, RAM, suhu dari sistem (pakai psutil jika ada)."""
@@ -308,7 +310,7 @@ def send_heartbeat():
     try:
         r = requests.post(API_PING, json=payload, timeout=2)
         _last_ping_ms = round((time.time() - t0) * 1000, 1)
-        print(f"[Sonara] Heartbeat OK: {r.status_code} ({_last_ping_ms}ms)")
+        print(f"[AuralAI] Heartbeat OK: {r.status_code} ({_last_ping_ms}ms)")
         srv = r.json()
         if "settings" in srv:
             _apply_settings(srv["settings"])
@@ -316,16 +318,20 @@ def send_heartbeat():
             _show_bbox = bool(srv["settings"].get("show_bbox", True))
     except Exception as e:
         _last_ping_ms = None
-        print(f"[Sonara] Heartbeat GAGAL: {e}")
+        print(f"[AuralAI] Heartbeat GAGAL: {e}")
 
 def send_update(payload):
     _post(API_UPDATE, payload, timeout=0.3)
 
 def _apply_settings(cfg):
-    global _conf_thresh, _iou_thresh, _blur_thresh
-    if "conf_threshold"  in cfg: _conf_thresh = float(cfg["conf_threshold"])
-    if "iou_threshold"   in cfg: _iou_thresh  = float(cfg["iou_threshold"])
-    if "blur_threshold"  in cfg: _blur_thresh  = float(cfg["blur_threshold"])
+    global _conf_thresh, _iou_thresh, _blur_thresh, _rt_cal
+    if "conf_threshold" in cfg:
+        _conf_thresh = float(cfg["conf_threshold"])
+    if "iou_threshold" in cfg:
+        _iou_thresh = float(cfg["iou_threshold"])
+    if "blur_threshold" in cfg:
+        _blur_thresh = float(cfg["blur_threshold"])
+    _rt_cal = parse_remote_settings(cfg)
 
 def _set_model_status(status, detail=""):
     _post(API_MODEL_STATUS, {"status": status, "detail": detail}, timeout=0.5)
@@ -354,9 +360,9 @@ def _frame_worker(frame_bgr, task):
         b64  = base64.b64encode(buf).decode("utf-8")
         resp = requests.post(API_FRAME, json={"image": b64, "task": task}, timeout=25)
         last_result_text = resp.json().get("result", "Tidak ada hasil")[:200]
-        print(f"[Sonara] AI hasil: {last_result_text[:80]}")
+        print(f"[AuralAI] AI hasil: {last_result_text[:80]}")
     except Exception as e:
-        print(f"[Sonara] Frame GAGAL: {e}")
+        print(f"[AuralAI] Frame GAGAL: {e}")
         last_result_text = f"Gagal: {str(e)[:80]}"
     finally:
         processing = False
@@ -364,7 +370,7 @@ def _frame_worker(frame_bgr, task):
 
 def trigger_scan(frame_bgr):
     if processing:
-        print("[Sonara] Masih memproses, skip scan")
+        print("[AuralAI] Masih memproses, skip scan")
         return
     task = "ocr" if current_mode == MODE_TEXT else "describe"
     t = threading.Thread(target=_frame_worker, args=(frame_bgr.copy(), task), daemon=True)
@@ -395,7 +401,7 @@ def poll_command():
 def _open_browser():
     time.sleep(2.0)
     url = f"http://{HOST_IP}:{HOST_PORT}"
-    print(f"[Sonara] Membuka browser: {url}")
+    print(f"[AuralAI] Membuka browser: {url}")
     webbrowser.open(url)
 
 threading.Thread(target=_open_browser, daemon=True).start()
@@ -404,7 +410,7 @@ threading.Thread(target=_open_browser, daemon=True).start()
 # MAIN LOOP
 # ============================================================
 print("\n" + "=" * 55)
-print("  Sonara Desktop Runner")
+print("  AuralAI Desktop Runner")
 print(f"  Server  : http://{HOST_IP}:{HOST_PORT}")
 print(f"  Camera  : {'OK' if cap.isOpened() else 'TIDAK TERSEDIA'}")
 print(f"  YOLO    : {'OK (yolov8n)' if YOLO_OK else 'Tidak terpasang'}")
@@ -467,6 +473,13 @@ try:
                                         conf=_conf_thresh, iou=_iou_thresh)
                 _last_inference_ms = round((time.time() - t_infer) * 1000, 1)
                 _set_model_status("idle")
+                ign = _rt_cal.get("ignored_labels") or set()
+                allow = _rt_cal.get("detection_allowlist") or []
+                use_allow = bool(_rt_cal.get("use_detection_allowlist")) and len(allow) > 0
+                allow_set = set(x.lower() for x in allow) if use_allow else None
+                exm = _rt_cal.get("proximity_exempt_labels") or set()
+                prox_on = bool(_rt_cal.get("proximity_alerts", True))
+                ratio_th = float(_rt_cal.get("proximity_area_ratio", 0.82))
                 objs = []
                 for r in results:
                     for box in r.boxes:
@@ -474,17 +487,25 @@ try:
                         score  = float(box.conf[0])
                         cls    = int(box.cls[0])
                         label  = yolo_model.names[cls]
+                        lab_l = (label or "").strip().lower()
+                        if lab_l in ign:
+                            continue
+                        if allow_set is not None and lab_l not in allow_set:
+                            continue
                         cx_obj = (x1 + x2) / 2
                         pos    = ("kiri"  if cx_obj < CAM_W / 3
                                   else "kanan" if cx_obj > CAM_W * 2 / 3
                                   else "tengah")
                         ratio   = ((x2 - x1) * (y2 - y1)) / (CAM_W * CAM_H)
-                        warning = "terlalu dekat" if ratio > AREA_TOO_CLOSE else "aman"
+                        warning = "aman"
+                        if prox_on and lab_l not in exm and ratio > ratio_th:
+                            warning = "terlalu dekat"
                         objs.append({
                             "label":    label,
                             "score":    round(score, 2),
                             "position": pos,
                             "warning":  warning,
+                            "area_ratio": round(ratio, 4),
                             # bbox_norm untuk anotasi YOLO (0-1 normalized)
                             "bbox_norm": [
                                 round(x1 / CAM_W, 6), round(y1 / CAM_H, 6),
@@ -499,7 +520,7 @@ try:
         time.sleep(0.04)   # ~25fps loop
 
 except KeyboardInterrupt:
-    print("\n[Sonara] Dihentikan.")
+    print("\n[AuralAI] Dihentikan.")
 finally:
     cap.release()
-    print("[Sonara] Selesai.")
+    print("[AuralAI] Selesai.")

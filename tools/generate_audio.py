@@ -3,20 +3,26 @@ Audio Generator — PC-side script untuk pre-generate semua file WAV.
 Jalankan sekali di laptop sebelum deploy ke MaixCAM.
 
 Requires: pip install gtts
-Output:   ../audio/obj_*.wav + ../audio/system_*.wav
+Output:   ../audio/*.wav
 
 Usage:
-    python tools/generate_audio.py
+    python tools/generate_audio.py --from-wordlist
+    python tools/generate_audio.py --legacy
     python tools/generate_audio.py --lang id --output ../audio
-    python tools/generate_audio.py --dry-run   (hanya list tanpa generate)
+    python tools/generate_audio.py --dry-run --from-wordlist
 """
 
 import os
+import re
 import sys
 import time
 import argparse
 
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "audio")
+WORDLIST_DEFAULT = os.path.join(OUTPUT_DIR, "AuralAI_Audio_Wordlist.md")
+
+# Baris: namafile.wav … → "teks untuk TTS"
+_WORDLIST_LINE = re.compile(r"^(\S+\.wav)\s+→\s*\"(.*)\"\s*$")
 
 # ─── Label & Posisi ───────────────────────────────────────────────────────────
 
@@ -80,7 +86,28 @@ def build_audio_list():
     return items
 
 
-def generate_all(output_dir, lang="id", dry_run=False, delay=0.5):
+def parse_wordlist_markdown(md_path):
+    """
+    Baca audio/AuralAI_Audio_Wordlist.md — baris pola:
+    system_ready.wav                → "AuralAI siap digunakan"
+    """
+    items = []
+    seen = set()
+    with open(md_path, encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            m = _WORDLIST_LINE.match(line)
+            if not m:
+                continue
+            filename, text = m.group(1), m.group(2)
+            if filename in seen:
+                continue
+            seen.add(filename)
+            items.append((filename, text))
+    return items
+
+
+def generate_all(items, output_dir, lang="id", dry_run=False, delay=0.5):
     try:
         from gtts import gTTS
     except ImportError:
@@ -88,7 +115,6 @@ def generate_all(output_dir, lang="id", dry_run=False, delay=0.5):
         sys.exit(1)
 
     os.makedirs(output_dir, exist_ok=True)
-    items = build_audio_list()
 
     print(f"Akan generate {len(items)} file WAV ke: {output_dir}")
     print(f"Lang: {lang} | Dry run: {dry_run}\n")
@@ -106,17 +132,17 @@ def generate_all(output_dir, lang="id", dry_run=False, delay=0.5):
             continue
 
         if dry_run:
-            print(f"  [{i+1:3d}/{len(items)}] DRY   {filename} → \"{text}\"")
+            print(f"  [{i+1:3d}/{len(items)}] DRY   {filename} -> \"{text}\"")
             continue
 
         try:
             tts = gTTS(text=text, lang=lang, slow=False)
             tts.save(out_path)
-            print(f"  [{i+1:3d}/{len(items)}] OK    {filename} → \"{text}\"")
+            print(f"  [{i+1:3d}/{len(items)}] OK    {filename} -> \"{text}\"")
             generated += 1
             time.sleep(delay)  # Jeda untuk hindari rate limit
         except Exception as e:
-            print(f"  [{i+1:3d}/{len(items)}] FAIL  {filename} → {e}")
+            print(f"  [{i+1:3d}/{len(items)}] FAIL  {filename} -> {e}")
             failed += 1
 
     print(f"\nSelesai!")
@@ -137,9 +163,36 @@ if __name__ == "__main__":
     parser.add_argument("--lang", default="id", help="Language code (default: id)")
     parser.add_argument("--delay", type=float, default=0.5, help="Delay antar request (default: 0.5s)")
     parser.add_argument("--dry-run", action="store_true", help="List saja tanpa generate")
+    parser.add_argument(
+        "--from-wordlist",
+        nargs="?",
+        const=WORDLIST_DEFAULT,
+        default=None,
+        metavar="PATH",
+        help=f"Generate dari Markdown wordlist (default: {WORDLIST_DEFAULT})",
+    )
+    parser.add_argument(
+        "--legacy",
+        action="store_true",
+        help="Pola lama: kombinasi objek×posisi + system_* pendek",
+    )
     args = parser.parse_args()
 
+    if args.legacy and args.from_wordlist:
+        print("ERROR: pilih salah satu --legacy atau --from-wordlist")
+        sys.exit(1)
+    if args.from_wordlist:
+        wl_path = args.from_wordlist
+        if not os.path.isfile(wl_path):
+            print(f"ERROR: Wordlist tidak ditemukan: {wl_path}")
+            sys.exit(1)
+        audio_items = parse_wordlist_markdown(wl_path)
+        print(f"Sumber wordlist: {wl_path} ({len(audio_items)} entri)\n")
+    else:
+        audio_items = build_audio_list()
+
     generate_all(
+        items=audio_items,
         output_dir=args.output,
         lang=args.lang,
         dry_run=args.dry_run,

@@ -7,7 +7,7 @@ gtts>=2.5.0
 # Deploy script (deploy.py)
 paramiko>=3.4.0
 
-# Companion server + desktop runner (Sonara / MVP teruji)
+# Companion server + desktop runner (MVP teruji)
 flask>=3.0.0
 openai>=1.40.0
 python-dotenv>=1.0.0

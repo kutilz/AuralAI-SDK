@@ -9,6 +9,14 @@ import json
 from datetime import datetime
 from dotenv import load_dotenv
 
+from detection_calibration import (
+    COCO_CALIBRATION_LABELS,
+    DEFAULT_PROXIMITY_EXEMPT_LABELS,
+    default_settings_dict,
+    merge_settings_post,
+    prepare_objects,
+)
+
 _companion_root = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(_companion_root, ".env"))
 load_dotenv()
@@ -16,7 +24,12 @@ load_dotenv()
 app = Flask(__name__)
 HOST_PORT = 5000
 
-_api_key = (os.getenv("OPENAI_API_KEY") or os.getenv("SONARA_API_KEY") or "").strip()
+_api_key = (
+    os.getenv("OPENAI_API_KEY")
+    or os.getenv("AURAL_API_KEY")
+    or os.getenv("SONARA_API_KEY")
+    or ""
+).strip()
 client = None
 openai_available = False
 if _api_key:
@@ -60,14 +73,9 @@ _ping_recv_times: list = []   # timestamp ping diterima (20 terakhir)
 _ping_interval_expected = 5.0 # heartbeat MaixCam/desktop: 5s
 
 # ============================================================
-# TUNING SETTINGS (sliders di dev panel)
+# TUNING SETTINGS (web: Kalibrasi + Dev Tools)
 # ============================================================
-_settings = {
-    "conf_threshold":  0.45,
-    "iou_threshold":   0.45,
-    "blur_threshold":  50.0,
-    "show_bbox":       True,   # tampilkan bounding box di preview
-}
+_settings = default_settings_dict()
 _settings_lock = threading.Lock()
 
 # ============================================================
@@ -200,9 +208,10 @@ LABEL_ID = {
 
 def failsafe_alert(objects: list) -> str:
     for o in objects:
+        if o.get("warning") != "terlalu dekat":
+            continue
         lbl = LABEL_ID.get(o["label"], o["label"])
-        if o["warning"] == "terlalu dekat":
-            return f"Awas! Ada {lbl} terlalu dekat di {o['position']}."
+        return f"Awas: {lbl} sangat dekat di {o['position']}."
     if objects:
         lbl = LABEL_ID.get(objects[0]["label"], objects[0]["label"])
         return f"Ada {lbl} di {objects[0]['position']}."
@@ -222,10 +231,13 @@ def _gen_alert_worker(objects: list):
         f"{o['label']} ({o['position']}, {o['warning']})" for o in objects
     )
     prompt = (
-        "Kamu adalah asisten kacamata tunanetra. Objek terdeteksi: "
+        "Kamu asisten navigasi tunanetra. Objek terdeteksi: "
         f"{obj_str}\n"
-        "Buat 1 kalimat peringatan singkat dan natural dalam bahasa Indonesia. "
-        "Prioritaskan objek 'terlalu dekat'. Maksimal 10 kata."
+        "Keyboard, gelas, cangkir, laptop, botol, kursi di meja adalah NORMAL — "
+        "jangan bilang «hati-hati» atau «terlalu dekat» untuk itu.\n"
+        "Hanya tegaskan bahaya nyata: orang/kendaraan sangat dekat, tangga, lubang, halangan jalan. "
+        "Satu kalimat Bahasa Indonesia, maksimal 14 kata. Kalau aman: jawab netral seperti "
+        "«Tidak ada halangan berbahaya» atau sebut objek umum tanpa alarm."
     )
     t0 = time.time()
     try:
@@ -259,16 +271,20 @@ def update_data():
     data = request.json
     if data:
         latest_data["camera"]      = data.get("camera", {"is_blur": False, "blur_score": 0.0})
-        latest_data["objects"]     = data.get("objects", [])
+        raw_objs                   = data.get("objects", [])
         latest_data["last_update"] = time.time()
         # Simpan raw payload untuk JSON inspector
         with _raw_lock:
             _raw_payloads["update"] = data
             _raw_update_ts = time.time()
+        with _settings_lock:
+            _cfg = dict(_settings)
+        filtered = prepare_objects(raw_objs, _cfg)
+        latest_data["objects"] = filtered
         if data.get("mode") == "object":
             threading.Thread(
                 target=_gen_alert_worker,
-                args=(latest_data["objects"],),
+                args=(filtered,),
                 daemon=True,
             ).start()
     return jsonify({"status": "ok"})
@@ -485,13 +501,17 @@ def api_settings():
     if request.method == "POST":
         data = request.json or {}
         with _settings_lock:
-            for key in ("conf_threshold", "iou_threshold", "blur_threshold"):
-                if key in data:
-                    _settings[key] = round(float(data[key]), 3)
+            _settings = merge_settings_post(_settings, data)
         _dbg(f"[settings] updated: {_settings}")
         return jsonify({"status": "ok", "settings": _settings})
     with _settings_lock:
         return jsonify(_settings)
+
+
+@app.route("/api/coco_labels", methods=["GET"])
+def api_coco_labels():
+    """Daftar label untuk UI kalibrasi (checkbox)."""
+    return jsonify({"labels": COCO_CALIBRATION_LABELS})
 
 
 @app.route("/api/model_status", methods=["POST"])
@@ -567,7 +587,7 @@ def api_capture():
 
     saved_types = ["jpg", "json"] + (["txt (YOLO)"] if yolo_lines else [])
     _dbg(f"[capture] {'FLAG' if flagged else 'snap'}: cap_{ts} — {', '.join(saved_types)}")
-    print(f"[Sonara] Capture: {img_path} | YOLO annotations: {len(yolo_lines)} objs")
+    print(f"[AuralAI] Capture: {img_path} | YOLO annotations: {len(yolo_lines)} objs")
     return jsonify({"status": "ok", "file": f"cap_{ts}.jpg",
                     "annotations": len(yolo_lines), "flagged": flagged})
 
@@ -631,7 +651,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Sonara</title>
+  <title>AuralAI</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     body { -webkit-tap-highlight-color: transparent; }
@@ -670,12 +690,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <div id="overlay" class="fixed inset-0 bg-gray-950/95 z-50 flex items-center justify-center p-6 backdrop-blur-sm">
   <div class="bg-gray-900 border border-gray-800 rounded-3xl p-8 max-w-sm w-full text-center shadow-2xl">
     <div class="text-5xl mb-5">&#128374;</div>
-    <h1 class="text-3xl font-black text-blue-400 mb-1 tracking-wide">SONARA</h1>
-    <p class="text-gray-500 text-sm mb-1">Kacamata Pintar Tunanetra</p>
+    <h1 class="text-3xl font-black text-blue-400 mb-1 tracking-wide">AURALAI</h1>
+    <p class="text-gray-500 text-sm mb-1">Asisten visual tunanetra</p>
     <p class="text-gray-600 text-xs mb-8">Ketuk tombol untuk mengaktifkan audio &amp; monitoring</p>
     <button onclick="startApp()"
       class="w-full bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white font-bold py-4 rounded-2xl text-lg shadow-lg shadow-blue-900/40 transition btn-tap">
-      &#9654;&nbsp; Mulai Sonara
+      &#9654;&nbsp; Mulai AuralAI
     </button>
   </div>
 </div>
@@ -695,7 +715,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <!-- ─── Header bar ─── -->
   <div class="flex items-center justify-between mb-4 gap-2 flex-wrap">
     <div>
-      <h1 class="text-2xl font-black text-blue-400 tracking-widest">SONARA</h1>
+      <h1 class="text-2xl font-black text-blue-400 tracking-widest">AURALAI</h1>
       <p class="text-gray-600 text-[10px] tracking-widest uppercase">Observer Panel</p>
     </div>
     <div class="flex items-center gap-2 flex-wrap justify-end">
@@ -774,7 +794,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           <div id="cam-nosignal" class="absolute inset-0 flex flex-col items-center justify-center bg-gray-950">
             <div class="text-4xl mb-3 text-gray-800">&#128247;</div>
             <p class="text-gray-700 text-sm font-mono">Menunggu stream...</p>
-            <p class="text-gray-800 text-[10px] mt-1">Jalankan companion/run_desktop.py atau device/sonara_maix.py</p>
+            <p class="text-gray-800 text-[10px] mt-1">Jalankan companion/run_desktop.py atau device/aural_maix.py</p>
           </div>
         </div>
       </div>
@@ -966,6 +986,64 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <p class="text-[10px] text-gray-700 mt-2 text-center">Aktif saat Mode OCR atau Deskripsi</p>
       </div>
 
+      <!-- Kalibrasi deteksi -->
+      <details class="bg-gray-900 border border-emerald-900/40 rounded-2xl overflow-hidden mb-3 group" id="calib-details" open>
+        <summary class="flex items-center justify-between px-4 py-3 hover:bg-gray-800/50 transition cursor-pointer">
+          <div>
+            <span class="text-[10px] text-emerald-500 uppercase tracking-wider font-bold">Kalibrasi deteksi</span>
+            <span class="text-[9px] text-gray-600 ml-2">Jarak, class diabaikan, allowlist</span>
+          </div>
+          <span class="chevron text-gray-600 text-sm">&#9654;</span>
+        </summary>
+        <div class="px-4 pb-4 space-y-3 border-t border-gray-800 text-[11px] text-gray-300">
+          <div class="flex items-center justify-between gap-3 pt-2">
+            <span class="text-[10px] text-gray-400">Peringatan bbox besar / terlalu dekat</span>
+            <div class="flex items-center gap-2">
+              <input type="hidden" id="cal-prox-on-val" value="1"/>
+              <button type="button" id="cal-prox-toggle" onclick="toggleCalProx()"
+                class="px-3 py-1 rounded-lg border border-emerald-800 text-[10px] font-semibold bg-emerald-900/50 text-emerald-200">ON</button>
+            </div>
+          </div>
+          <div>
+            <div class="flex justify-between mb-1">
+              <label class="text-[10px] text-gray-500 uppercase">Ambang luas bbox (share frame)</label>
+              <span id="lbl-cal-area" class="text-[10px] font-mono text-emerald-400">0.82</span>
+            </div>
+            <input id="cal-prox-area" type="range" min="0.35" max="0.95" step="0.02" value="0.82"
+              oninput="document.getElementById('lbl-cal-area').textContent=parseFloat(this.value).toFixed(2); scheduleSettingsApply();"
+              class="w-full h-1.5 rounded-full accent-emerald-600">
+            <p class="text-[9px] text-gray-600 mt-1">Naik = hanya objek yang sangat memenuhi layar yang dianggap dekat (kurangi spam keyboard/gelas).</p>
+          </div>
+          <div>
+            <label class="text-[10px] text-gray-500 uppercase block mb-1">Abaikan class (COCO, pisah koma)</label>
+            <textarea id="cal-ignored" rows="2" placeholder="mis: cup, keyboard"
+              oninput="scheduleSettingsApply();"
+              class="w-full bg-gray-950 border border-gray-800 rounded-lg p-2 text-[11px] font-mono text-gray-300"></textarea>
+          </div>
+          <div>
+            <label class="text-[10px] text-gray-500 uppercase block mb-1">Tanpa peringatan jarak untuk class</label>
+            <textarea id="cal-exempt" rows="3" oninput="scheduleSettingsApply();"
+              class="w-full bg-gray-950 border border-gray-800 rounded-lg p-2 text-[10px] font-mono text-gray-300 leading-snug"></textarea>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <button type="button" onclick="presetDeskCalib()"
+              class="px-3 py-1.5 bg-emerald-900/40 border border-emerald-800 text-emerald-200 rounded-lg text-[10px] font-semibold btn-tap">Preset meja kerja</button>
+            <button type="button" onclick="resetCalibDefaults()"
+              class="px-3 py-1.5 bg-gray-800 border border-gray-700 text-gray-400 rounded-lg text-[10px] btn-tap">Reset default</button>
+          </div>
+          <div class="flex items-start gap-2 pt-1 border-t border-gray-800/80">
+            <input type="checkbox" id="cal-use-allow" class="mt-1 rounded border-gray-700 bg-gray-950"
+              onchange="document.getElementById('cal-allow').disabled=!this.checked; scheduleSettingsApply();">
+            <div class="flex-1 min-w-0">
+              <label for="cal-use-allow" class="text-[10px] text-gray-400">Hanya pantau class ini (allowlist)</label>
+              <textarea id="cal-allow" rows="2" disabled placeholder="person, car, bus, motorcycle"
+                oninput="scheduleSettingsApply();"
+                class="w-full mt-1 bg-gray-950 border border-gray-800 rounded-lg p-2 text-[10px] font-mono text-gray-400"></textarea>
+            </div>
+          </div>
+        </div>
+      </details>
+
       <!-- Dev Panel (collapsible) -->
       <details class="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden group">
         <summary class="flex items-center justify-between px-4 py-3 hover:bg-gray-800/50 transition">
@@ -1056,7 +1134,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <p class="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Cara Pakai</p>
         <p class="text-[11px] text-gray-500">&#127381; Jalankan <code class="text-gray-400">webserver.py</code> di PC</p>
         <p class="text-[11px] text-gray-500">&#128187; Test desktop: <code class="text-gray-400">companion/run_desktop.py</code></p>
-        <p class="text-[11px] text-gray-500">&#128247; Di MaixCam: <code class="text-gray-400">device/sonara_maix.py</code></p>
+        <p class="text-[11px] text-gray-500">&#128247; Di MaixCam: <code class="text-gray-400">device/aural_maix.py</code></p>
       </div>
 
     </div><!-- /right -->
@@ -1077,6 +1155,7 @@ let camRetryTimer  = null;
 let _settingsTimer = null;
 let _debugOffset   = 0;
 
+const PRESET_EXEMPT_ARR = __PRESET_EXEMPT_JSON__;
 const MODE_ICONS  = {"1":"&#128269;", "2":"&#128218;", "3":"&#127748;"};
 const MODE_NAMES  = {"1":"Deteksi Objek", "2":"Baca Teks (OCR)", "3":"Deskripsi Adegan"};
 const MODE_COLORS = {
@@ -1434,6 +1513,73 @@ async function captureSnapshot(flagged) {
   }
 }
 
+// ─── Kalibrasi deteksi (web) ─────────────────────────────
+function splitCalibLabels(s) {
+  if (!s || !String(s).trim()) return [];
+  return String(s).replace(/\n/g, ",").split(",").map((p) => p.trim().toLowerCase()).filter(Boolean);
+}
+function joinCalibLabels(arr) {
+  if (!arr || !arr.length) return "";
+  return arr.join(", ");
+}
+function calibrationPayload() {
+  const proxOn = document.getElementById("cal-prox-on-val").value === "1";
+  const area = parseFloat(document.getElementById("cal-prox-area").value);
+  const ign = splitCalibLabels(document.getElementById("cal-ignored").value);
+  const ex = splitCalibLabels(document.getElementById("cal-exempt").value);
+  const useAllow = document.getElementById("cal-use-allow").checked;
+  const p = {
+    proximity_alerts: proxOn,
+    proximity_area_ratio: area,
+    ignored_labels: ign,
+    proximity_exempt_labels: ex,
+    use_detection_allowlist: useAllow,
+  };
+  if (useAllow) {
+    p.detection_allowlist = splitCalibLabels(document.getElementById("cal-allow").value);
+  }
+  return p;
+}
+function updateCalProxToggleUI(on) {
+  const btn = document.getElementById("cal-prox-toggle");
+  if (!btn) return;
+  btn.textContent = on ? "ON" : "OFF";
+  btn.className = on
+    ? "px-3 py-1 rounded-lg border border-emerald-800 text-[10px] font-semibold bg-emerald-900/50 text-emerald-200"
+    : "px-3 py-1 rounded-lg border border-gray-700 text-[10px] font-semibold bg-gray-800 text-gray-400";
+}
+function toggleCalProx() {
+  const h = document.getElementById("cal-prox-on-val");
+  h.value = h.value === "1" ? "0" : "1";
+  updateCalProxToggleUI(h.value === "1");
+  scheduleSettingsApply();
+}
+function presetDeskCalib() {
+  document.getElementById("cal-exempt").value = joinCalibLabels(PRESET_EXEMPT_ARR);
+  document.getElementById("cal-ignored").value = "";
+  const sl = document.getElementById("cal-prox-area");
+  sl.value = "0.88";
+  document.getElementById("lbl-cal-area").textContent = "0.88";
+  document.getElementById("cal-prox-on-val").value = "1";
+  updateCalProxToggleUI(true);
+  document.getElementById("cal-use-allow").checked = false;
+  document.getElementById("cal-allow").disabled = true;
+  document.getElementById("cal-allow").value = "";
+  scheduleSettingsApply();
+}
+function resetCalibDefaults() {
+  document.getElementById("cal-exempt").value = joinCalibLabels(PRESET_EXEMPT_ARR);
+  document.getElementById("cal-ignored").value = "";
+  document.getElementById("cal-prox-area").value = "0.82";
+  document.getElementById("lbl-cal-area").textContent = "0.82";
+  document.getElementById("cal-prox-on-val").value = "1";
+  updateCalProxToggleUI(true);
+  document.getElementById("cal-use-allow").checked = false;
+  document.getElementById("cal-allow").disabled = true;
+  document.getElementById("cal-allow").value = "";
+  scheduleSettingsApply();
+}
+
 // ─── Settings sliders ────────────────────────────────────
 function syncSliders(cfg) {
   if (cfg.conf_threshold != null) {
@@ -1455,6 +1601,39 @@ function syncSliders(cfg) {
     if (btn)   btn.className   = `relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${_bboxOn ? "bg-blue-600" : "bg-gray-700"}`;
     if (thumb) thumb.className = `inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${_bboxOn ? "translate-x-4" : "translate-x-1"}`;
   }
+  const proxH = document.getElementById("cal-prox-on-val");
+  if (proxH && cfg.proximity_alerts != null) {
+    proxH.value = cfg.proximity_alerts ? "1" : "0";
+    updateCalProxToggleUI(!!cfg.proximity_alerts);
+  }
+  const areaEl = document.getElementById("cal-prox-area");
+  if (areaEl && cfg.proximity_area_ratio != null) {
+    const v = parseFloat(cfg.proximity_area_ratio);
+    areaEl.value = String(v);
+    const lbl = document.getElementById("lbl-cal-area");
+    if (lbl) lbl.textContent = v.toFixed(2);
+  }
+  const ign = document.getElementById("cal-ignored");
+  if (ign && cfg.ignored_labels != null) {
+    ign.value = Array.isArray(cfg.ignored_labels) ? joinCalibLabels(cfg.ignored_labels) : String(cfg.ignored_labels || "");
+  }
+  const exm = document.getElementById("cal-exempt");
+  if (exm && cfg.proximity_exempt_labels != null) {
+    exm.value = Array.isArray(cfg.proximity_exempt_labels)
+      ? joinCalibLabels(cfg.proximity_exempt_labels)
+      : String(cfg.proximity_exempt_labels || "");
+  }
+  const useA = document.getElementById("cal-use-allow");
+  const allowTa = document.getElementById("cal-allow");
+  if (useA && cfg.use_detection_allowlist != null) {
+    useA.checked = !!cfg.use_detection_allowlist;
+    if (allowTa) allowTa.disabled = !useA.checked;
+  }
+  if (allowTa && cfg.detection_allowlist != null) {
+    allowTa.value = Array.isArray(cfg.detection_allowlist)
+      ? joinCalibLabels(cfg.detection_allowlist)
+      : String(cfg.detection_allowlist || "");
+  }
 }
 function scheduleSettingsApply() {
   clearTimeout(_settingsTimer);
@@ -1466,6 +1645,7 @@ async function applySettings() {
     conf_threshold: parseFloat(document.getElementById("sl-conf").value),
     iou_threshold:  parseFloat(document.getElementById("sl-iou").value),
     blur_threshold: parseFloat(document.getElementById("sl-blur").value),
+    ...calibrationPayload(),
   };
   try {
     const r = await fetch("/api/settings", {
@@ -1512,7 +1692,7 @@ function clearDebug() {
 function startApp() {
   isTtsEnabled = true;
   document.getElementById("overlay").classList.add("hidden");
-  rawSpeak("Sistem Sonara aktif.");
+  rawSpeak("Sistem AuralAI aktif.");
   setInterval(pollStatus,      400);
   setInterval(pollSpeechQueue, 800);
   setInterval(pollDebugLog,   1500);
@@ -1668,6 +1848,10 @@ function syncCtrlBtns(modeId) {
 </body>
 </html>"""
 
+HTML_TEMPLATE = HTML_TEMPLATE.replace(
+    "__PRESET_EXEMPT_JSON__", json.dumps(DEFAULT_PROXIMITY_EXEMPT_LABELS)
+)
+
 
 @app.route("/")
 def index():
@@ -1692,9 +1876,9 @@ def get_local_ip() -> str:
 if __name__ == "__main__":
     LAN_IP = get_local_ip()
     print("=" * 58)
-    print("  SERVER SONARA AKTIF")
+    print("  SERVER AURALAI (companion) AKTIF")
     print(f"  IP PC    : {LAN_IP}")
     print(f"  URL HP   : http://{LAN_IP}:{HOST_PORT}")
-    print(f"  MaixCam  : export AURAL_COMPANION_HOST=\"{LAN_IP}\"  lalu python sonara_maix.py")
+    print(f"  MaixCam  : export AURAL_COMPANION_HOST=\"{LAN_IP}\"  lalu python aural_maix.py")
     print("=" * 58)
     app.run(host="0.0.0.0", port=HOST_PORT, debug=False)

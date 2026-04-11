@@ -1,14 +1,19 @@
 """
-Sonara / AuralAI — loop utama di MaixCAM (MaixPy).
-Hubungkan ke companion PC: set env sebelum run (MaixVision / terminal):
+AuralAI — loop utama di MaixCAM (MaixPy) + companion PC.
+
+Set env sebelum run (MaixVision / terminal):
 
   export AURAL_WIFI_SSID="nama_ap"
   export AURAL_WIFI_PASSWORD="password_ap"
-  export AURAL_COMPANION_HOST="192.168.x.x"   # IP laptop (lihat companion/webserver.py)
+  export AURAL_COMPANION_HOST="192.168.x.x"   # IPv4 Wi-Fi PC (satu subnet; bukan IP WSL)
   export AURAL_COMPANION_PORT="5000"
 
-HTTP memakai modul `requests` (tersedia di MaixPy, lihat dokumentasi MaixCAM HTTP).
-Tanpa WiFi / tanpa companion, mode deteksi lokal tetap jalan; OCR & deskripsi butuh PC.
+Kalau DHCP dari script macet (udhcpc discover): sambung WiFi lewat **Settings → WiFi**, lalu
+unset AURAL_WIFI_* atau biarkan — app akan pakai get_ip() yang sudah ada.
+
+Uji jaringan: companion/minimal_server.py + device/network_probe.py
+
+HTTP: modul `requests` (MaixPy). Tanpa companion, deteksi lokal tetap jalan; OCR/deskripsi butuh PC.
 """
 
 from maix import camera, display, image, nn, app, network, touchscreen  # noqa: F401
@@ -16,6 +21,17 @@ import os
 import time
 import threading
 import base64
+
+from detection_calibration import parse_remote_settings
+
+
+def _apply_ping_settings(resp_json: dict) -> None:
+    global _remote_cal
+    s = resp_json.get("settings") if isinstance(resp_json, dict) else None
+    _remote_cal = parse_remote_settings(s)
+
+
+_remote_cal = parse_remote_settings({})
 
 try:
     import requests
@@ -44,8 +60,7 @@ API_PING    = f"http://{HOST_IP}:{HOST_PORT}/api/ping"
 API_PREVIEW = f"http://{HOST_IP}:{HOST_PORT}/api/frame_preview"
 
 CAM_W, CAM_H   = 320, 224
-BLUR_THRESHOLD = 50.0
-AREA_TOO_CLOSE = 0.6
+BLUR_THRESHOLD = 50.0  # fallback sebelum ping pertama
 
 # ============================================================
 # MODE STATE
@@ -65,7 +80,7 @@ MODE_LABELS = {
 # ============================================================
 # INISIALISASI HARDWARE
 # ============================================================
-print("Sonara: Inisialisasi hardware...")
+print("AuralAI: Inisialisasi hardware...")
 
 cam  = camera.Camera(CAM_W, CAM_H, image.Format.FMT_RGB888)
 disp = display.Display()
@@ -117,24 +132,32 @@ except Exception as e:
         print(f"WARN: YOLOv5 gagal: {e2}")
 
 # ============================================================
-# KONEKSI WIFI
+# KONEKSI WIFI (pola MaixPy: wifi_connect.py + err.check_raise, timeout 60s)
 # ============================================================
 wifi_connected = False
 wifi_ip = ""
 w = network.wifi.Wifi()
 if SSID:
     try:
-        print(f"Menghubungkan ke WiFi: {SSID} ...")
-        w.connect(SSID, PASSWORD, wait=True, timeout=15)
-        wifi_ip = w.get_ip()
-        wifi_connected = True
-        print(f"WiFi OK — IP MaixCam: {wifi_ip}")
+        from wifi_connect import connect_wifi
+
+        print(f"Menghubungkan ke WiFi (timeout 60s): {SSID!r} ...")
+        wifi_ip = connect_wifi(SSID, PASSWORD, timeout_s=60)
+        wifi_connected = bool(wifi_ip)
+        print(f"WiFi OK — IP MaixCAM: {wifi_ip}")
     except Exception as e:
-        print(f"WiFi gagal (mode offline): {e}")
+        print(f"WiFi dari script gagal (mode offline / pakai Settings): {e}")
+        try:
+            wifi_ip = (w.get_ip() or "").strip()
+            wifi_connected = bool(wifi_ip)
+            if wifi_ip:
+                print(f"WiFi sudah ada dari sebelumnya: {wifi_ip}")
+        except Exception:
+            wifi_ip = ""
 else:
-    print("AURAL_WIFI_SSID kosong — lewati koneksi WiFi (set env untuk online).")
+    print("AURAL_WIFI_SSID kosong — lewati connect dari script (pakai Settings atau set env).")
     try:
-        wifi_ip = w.get_ip() or ""
+        wifi_ip = (w.get_ip() or "").strip()
         wifi_connected = bool(wifi_ip)
     except Exception:
         wifi_ip = ""
@@ -233,7 +256,7 @@ def draw_menu_overlay(img):
     """
     # Header / judul
     img.draw_rect(0, 0, CAM_W, 28, C_DKGRAY, thickness=-1)
-    img.draw_string(CAM_W // 2 - 28, 6, "SONARA", C_CYAN, scale=1.5)
+    img.draw_string(CAM_W // 2 - 36, 6, "AURALAI", C_CYAN, scale=1.5)
     wifi_txt = wifi_ip if wifi_connected else "OFFLINE"
     wifi_col = C_GREEN if wifi_connected else C_RED
     img.draw_string(CAM_W - 95, 9, wifi_txt, wifi_col, scale=1)
@@ -286,7 +309,7 @@ def _send_frame_worker(task: str):
     processing = True
     last_result_text = ""
     try:
-        with open("/tmp/sonara_cap.jpg", "rb") as f:
+        with open("/tmp/aural_cap.jpg", "rb") as f:
             b64 = base64.b64encode(f.read()).decode("utf-8")
         payload = {"image": b64, "task": task}
         resp = requests.post(API_FRAME, json=payload, timeout=25)
@@ -301,7 +324,7 @@ def _send_frame_worker(task: str):
 
 def capture_and_send(img_to_save, task: str):
     try:
-        img_to_save.save("/tmp/sonara_cap.jpg")
+        img_to_save.save("/tmp/aural_cap.jpg")
     except Exception as e:
         print(f"Gagal simpan capture: {e}")
         return
@@ -311,7 +334,7 @@ def capture_and_send(img_to_save, task: str):
 def _send_preview_worker():
     """Kirim preview frame ke server untuk MJPEG stream di browser."""
     try:
-        with open("/tmp/sonara_preview.jpg", "rb") as f:
+        with open("/tmp/aural_preview.jpg", "rb") as f:
             b64 = base64.b64encode(f.read()).decode("utf-8")
         requests.post(API_PREVIEW, json={"image": b64}, timeout=0.5)
     except Exception:
@@ -325,7 +348,7 @@ def send_preview_async(img):
         return
     last_preview_ts = now
     try:
-        img.save("/tmp/sonara_preview.jpg")
+        img.save("/tmp/aural_preview.jpg")
     except Exception:
         return
     t = threading.Thread(target=_send_preview_worker, daemon=True)
@@ -375,7 +398,10 @@ while not app.need_exit():
                 json={"mode": current_mode, "mode_name": MODE_LABELS.get(current_mode, "")},
                 timeout=3.0,
             )
-            # debug pertama kali — bisa dihapus nanti
+            try:
+                _apply_ping_settings(r.json())
+            except Exception:
+                pass
             print(f"Heartbeat OK: {r.status_code}")
         except Exception as e:
             print(f"Heartbeat GAGAL: {e}")
@@ -421,7 +447,7 @@ while not app.need_exit():
                 img_cv     = image.image2cv(img, ensure_bgr=False, copy=False)
                 gray       = cv2.cvtColor(img_cv, cv2.COLOR_RGB2GRAY)
                 blur_score = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-                is_blur    = blur_score < BLUR_THRESHOLD
+                is_blur    = blur_score < float(_remote_cal.get("blur_threshold", BLUR_THRESHOLD))
                 payload["camera"] = {"blur_score": round(blur_score, 2), "is_blur": is_blur}
             except Exception:
                 pass
@@ -430,20 +456,41 @@ while not app.need_exit():
             img.draw_string(10, 40, "KAMERA BURAM!", C_RED, scale=2)
         elif detector_ready and detector is not None:
             try:
-                objs = detector.detect(img, conf_th=0.5, iou_th=0.45)
+                cth = float(_remote_cal.get("conf_threshold", 0.5))
+                ith = float(_remote_cal.get("iou_threshold", 0.45))
+                objs = detector.detect(img, conf_th=cth, iou_th=ith)
+                ign = _remote_cal.get("ignored_labels") or set()
+                allow = _remote_cal.get("detection_allowlist") or []
+                use_allow = bool(_remote_cal.get("use_detection_allowlist")) and len(allow) > 0
+                allow_set = set(x.lower() for x in allow) if use_allow else None
+                exm = _remote_cal.get("proximity_exempt_labels") or set()
+                prox_on = bool(_remote_cal.get("proximity_alerts", True))
+                ratio_th = float(_remote_cal.get("proximity_area_ratio", 0.82))
+
                 for obj in objs:
+                    label = (detector.labels[obj.class_id] or "").strip()
+                    lab_l = label.lower()
+                    if lab_l in ign:
+                        continue
+                    if allow_set is not None and lab_l not in allow_set:
+                        continue
+
                     cx_obj = obj.x + obj.w / 2
                     pos    = "tengah"
                     if cx_obj < CAM_W / 3:      pos = "kiri"
                     elif cx_obj > CAM_W * 2 / 3: pos = "kanan"
 
-                    ratio   = (obj.w * obj.h) / (CAM_W * CAM_H)
-                    warning = "terlalu dekat" if ratio > AREA_TOO_CLOSE else "aman"
-                    label   = detector.labels[obj.class_id]
+                    ratio = (obj.w * obj.h) / (CAM_W * CAM_H)
+                    warning = "aman"
+                    if prox_on and lab_l not in exm and ratio > ratio_th:
+                        warning = "terlalu dekat"
 
                     payload["objects"].append({
-                        "label": label, "score": round(obj.score, 2),
-                        "position": pos, "warning": warning,
+                        "label": label,
+                        "score": round(obj.score, 2),
+                        "position": pos,
+                        "warning": warning,
+                        "area_ratio": round(ratio, 4),
                     })
                     col = C_RED if warning == "terlalu dekat" else C_GREEN
                     img.draw_rect(obj.x, obj.y, obj.w, obj.h, col, thickness=2)
