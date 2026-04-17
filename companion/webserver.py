@@ -6,6 +6,7 @@ import socket
 import os
 import base64
 import json
+import re
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -189,9 +190,154 @@ def sq_add(text: str, stype: str = "info", priority: int = 1):
         if len(_sq_items) > 200:
             _sq_items.pop(0)
     # Catat ke alert history dan debug log
-    if stype in ("alert", "warning", "ocr", "describe", "system"):
+    if stype in ("alert", "warning", "ocr", "describe", "system", "qris"):
         _alert_hist_add(text, stype)
     _dbg(f"[speech/{stype}] {text[:70]}")
+
+# ============================================================
+# QRIS (QR decode + basic heuristics)
+# ============================================================
+_QRIS_PREFIX_RE = re.compile(r"^000201")
+_QRIS_BRAND_RE  = re.compile(r"ID\.CO\.QRIS\.WWW", re.IGNORECASE)
+
+
+def _qris_is_likely(payload: str) -> bool:
+    """Heuristik ringan: payload EMVCo + brand QRIS."""
+    if not payload:
+        return False
+    s = payload.strip()
+    return bool(_QRIS_PREFIX_RE.match(s)) and bool(_QRIS_BRAND_RE.search(s))
+
+
+def _tlv_parse_emv(s: str) -> dict:
+    """
+    Parse string EMVCo TLV sederhana (ID 2 digit, LEN 2 digit, VALUE).
+    Return dict: {tag: value_or_dict}. Tag nested (mis. 26/51/62) diparse rekursif.
+    """
+    out: dict = {}
+    i = 0
+    n = len(s)
+    while i + 4 <= n:
+        tag = s[i : i + 2]
+        ln_s = s[i + 2 : i + 4]
+        if not tag.isdigit() or not ln_s.isdigit():
+            break
+        ln = int(ln_s)
+        i += 4
+        if i + ln > n:
+            break
+        val = s[i : i + ln]
+        i += ln
+
+        # Nested templates yang umum di QRIS/EMVCo
+        if tag in ("26", "27", "28", "29", "30", "31", "32", "33", "34", "51", "62", "64"):
+            out[tag] = _tlv_parse_emv(val)
+        else:
+            out[tag] = val
+    return out
+
+
+def _qris_extract_summary(payload: str) -> dict:
+    """
+    Ambil info penting dari payload QRIS/EMVCo.
+    """
+    tlv = _tlv_parse_emv(payload.strip())
+
+    # Field standar EMVCo:
+    # 00=payload format, 01=initiation method, 52=mcc, 53=currency, 54=amount, 58=country, 59=merchant name, 60=merchant city
+    name = (tlv.get("59") or "").strip() if isinstance(tlv.get("59"), str) else ""
+    city = (tlv.get("60") or "").strip() if isinstance(tlv.get("60"), str) else ""
+    amount = (tlv.get("54") or "").strip() if isinstance(tlv.get("54"), str) else ""
+    method = (tlv.get("01") or "").strip() if isinstance(tlv.get("01"), str) else ""
+    is_dynamic = (method == "12")  # 11=static, 12=dynamic
+    is_static = (method == "11")
+
+    # Merchant Account Info (contoh: 26 berisi AID/ID dan bisa ada merchant id)
+    mai = tlv.get("26") if isinstance(tlv.get("26"), dict) else {}
+    mai_gui = (mai.get("00") or "").strip() if isinstance(mai, dict) and isinstance(mai.get("00"), str) else ""
+    mai_mid = (mai.get("01") or "").strip() if isinstance(mai, dict) and isinstance(mai.get("01"), str) else ""
+
+    return {
+        "merchant_name": name,
+        "merchant_city": city,
+        "amount": amount,
+        "is_dynamic": is_dynamic,
+        "is_static": is_static,
+        "mai_gui": mai_gui,
+        "mai_merchant_id": mai_mid,
+        "raw_tlv": tlv,
+    }
+
+
+def _qris_summary_text(summary: dict) -> str:
+    name = (summary.get("merchant_name") or "").strip()
+    city = (summary.get("merchant_city") or "").strip()
+    amount = (summary.get("amount") or "").strip()
+
+    parts = []
+    if name:
+        parts.append(f"Merchant: {name}")
+    if city:
+        parts.append(f"Kota: {city}")
+    if amount:
+        parts.append(f"Nominal: {amount}")
+
+    if summary.get("is_dynamic"):
+        parts.append("Tipe: dinamis")
+    elif summary.get("is_static"):
+        parts.append("Tipe: statis")
+
+    return " | ".join(parts) if parts else "QRIS terbaca, tapi detail merchant tidak lengkap."
+
+
+def _qris_nav_from_points(points, w: int, h: int) -> dict:
+    """
+    points: numpy array (4x2) atau (1x4x2) dari OpenCV.
+    Return dict berisi nav_text dan audio_suggest.
+    """
+    if points is None:
+        return {"nav_text": "NAV: cari QR (gerakkan kamera pelan).", "audio": ["qris_not_detected.wav"]}
+    try:
+        pts = points[0] if getattr(points, "ndim", 0) == 3 else points
+        xs = [float(p[0]) for p in pts]
+        ys = [float(p[1]) for p in pts]
+    except Exception:
+        return {"nav_text": "NAV: kode terdeteksi tapi belum stabil.", "audio": ["qris_unclear.wav"]}
+
+    cx = sum(xs) / len(xs)
+    cy = sum(ys) / len(ys)
+    dx = cx - (w / 2.0)
+    dy = cy - (h / 2.0)
+    dead_x = w * 0.12
+    dead_y = h * 0.12
+
+    nav_bits = []
+    if abs(dx) < dead_x and abs(dy) < dead_y:
+        nav_bits.append("TENGAH (tahan)")
+    else:
+        if dx > dead_x:
+            nav_bits.append("geser KANAN")
+        elif dx < -dead_x:
+            nav_bits.append("geser KIRI")
+        if dy > dead_y:
+            nav_bits.append("turun")
+        elif dy < -dead_y:
+            nav_bits.append("naik")
+
+    bw = max(xs) - min(xs)
+    bh = max(ys) - min(ys)
+    area_ratio = (bw * bh) / float(max(w * h, 1))
+    if area_ratio < 0.06:
+        nav_bits.append("dekatkan")
+        audio = ["qris_too_far.wav"]
+    elif area_ratio > 0.55:
+        nav_bits.append("jauhkan")
+        audio = ["nav_very_close.wav"]
+    else:
+        audio = ["qris_scanning.wav"]
+
+    text = "NAV: " + (" | ".join(nav_bits) if nav_bits else "tahan")
+    return {"nav_text": text, "audio": audio}
 
 # ============================================================
 # FAIL-SAFE LOKAL (tanpa OpenAI)
@@ -311,6 +457,106 @@ def process_frame():
         _model_status["status"] = "idle"
         return jsonify({"result": "Tidak ada gambar diterima.", "status": "error"})
 
+    # --- QRIS: proses lokal (tanpa OpenAI) ---
+    if str(task).lower() == "qris":
+        _dbg("[frame/qris] received, decoding locally...")
+        try:
+            import cv2  # type: ignore
+            import numpy as np  # type: ignore
+
+            jpg = base64.b64decode(img_b64)
+            arr = np.frombuffer(jpg, dtype=np.uint8)
+            frame_bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if frame_bgr is None:
+                raise RuntimeError("decode jpeg gagal")
+
+            h, w = frame_bgr.shape[:2]
+            det = cv2.QRCodeDetector()
+
+            # Pakai beberapa strategi supaya robust (dekat/jauh, blur, exposure).
+            payload = ""
+            points = None
+
+            def _try(img_in):
+                nonlocal payload, points
+                if payload:
+                    return
+                p, pts, _ = det.detectAndDecode(img_in)
+                if p:
+                    payload = p
+                    points = pts
+                    return
+                # Simpan points kalau ada (buat navigasi), meski payload kosong
+                if points is None and pts is not None:
+                    points = pts
+
+            # 1) Original
+            _try(frame_bgr)
+            # 2) Grayscale (kadang lebih stabil)
+            if not payload:
+                try:
+                    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+                    _try(gray)
+                except Exception:
+                    pass
+            # 3) Multi-scale decode (sering membantu kalau terlalu dekat/jauh)
+            if not payload:
+                for s in (0.5, 0.75, 1.25, 1.5):
+                    try:
+                        resized = cv2.resize(frame_bgr, None, fx=s, fy=s, interpolation=cv2.INTER_AREA if s < 1 else cv2.INTER_CUBIC)
+                        _try(resized)
+                        if payload:
+                            break
+                    except Exception:
+                        continue
+
+            if (not payload) and points is None:
+                ok, points = det.detect(frame_bgr)
+                if not ok:
+                    points = None
+
+            nav = _qris_nav_from_points(points, w=w, h=h)
+
+            if payload:
+                is_qris = _qris_is_likely(payload)
+                if is_qris:
+                    summary = _qris_extract_summary(payload)
+                    result = _qris_summary_text(summary)
+                    # Push ringkasan (bukan angka mentah)
+                    sq_add("QRIS terdeteksi.", stype="qris", priority=10)
+                    sq_add(result, stype="qris", priority=9)
+                    audio = ["qris_detected.wav"]
+                else:
+                    result = "QR terbaca, tapi bukan QRIS."
+                    sq_add(result, stype="qris", priority=8)
+                    audio = ["qris_not_qris.wav"]
+            else:
+                result = "Kode pembayaran tidak ditemukan."
+                sq_add(nav["nav_text"], stype="qris", priority=3)
+                audio = nav["audio"]
+
+            _model_status["status"] = "idle"
+            latest_data["last_result"] = result
+            return jsonify(
+                {
+                    "result": result,
+                    "status": "ok",
+                    "qris": {
+                        "payload": payload or "",
+                        "is_qris": bool(payload and _qris_is_likely(payload)),
+                        "nav_text": nav["nav_text"],
+                        "audio_suggest": audio,
+                        "summary": (_qris_extract_summary(payload) if payload and _qris_is_likely(payload) else None),
+                    },
+                }
+            )
+        except Exception as e:
+            _model_status["status"] = "idle"
+            err = f"Gagal decode QR: {str(e)[:120]}"
+            sq_add(err, stype="error", priority=8)
+            latest_data["last_result"] = err
+            return jsonify({"result": err, "status": "error"})
+
     prompts = {
         "ocr": (
             "Baca semua teks yang ada di gambar ini secara lengkap dan akurat. "
@@ -375,6 +621,7 @@ def mode_change():  # noqa: E302
         1: "Mode deteksi objek aktif.",
         2: "Mode baca teks aktif. Ketuk layar kacamata untuk scan.",
         3: "Mode deskripsi adegan aktif. Ketuk layar kacamata untuk deskripsi.",
+        4: "Mode scan bayar (QRIS) aktif. Tekan Scan Sekarang di dashboard.",
     }
     if mode_id in mode_msgs:
         sq_add(mode_msgs[mode_id], stype="system", priority=10)
@@ -962,7 +1209,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         </div>
 
         <!-- Mode buttons -->
-        <div class="grid grid-cols-3 gap-1.5 mb-3">
+        <div class="grid grid-cols-4 gap-1.5 mb-3">
           <button id="cb-mode1" onclick="ctrlMode(1)"
             class="mode-ctrl-btn bg-blue-900/30 hover:bg-blue-800/60 border border-blue-800 text-blue-300 font-semibold py-2.5 rounded-xl text-xs transition btn-tap">
             &#128269; Auto
@@ -975,6 +1222,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             class="mode-ctrl-btn bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 font-semibold py-2.5 rounded-xl text-xs transition btn-tap">
             &#127748; Desc
           </button>
+          <button id="cb-mode4" onclick="ctrlMode(4)"
+            class="mode-ctrl-btn bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 font-semibold py-2.5 rounded-xl text-xs transition btn-tap">
+            &#128179; QRIS
+          </button>
         </div>
 
         <!-- Scan button -->
@@ -983,7 +1234,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           <span>&#128247;</span>
           <span id="scan-btn-label">Scan Sekarang</span>
         </button>
-        <p class="text-[10px] text-gray-700 mt-2 text-center">Aktif saat Mode OCR atau Deskripsi</p>
+        <p class="text-[10px] text-gray-700 mt-2 text-center">Aktif saat Mode OCR / Deskripsi / QRIS</p>
       </div>
 
       <!-- Kalibrasi deteksi -->
@@ -1157,7 +1408,7 @@ let _debugOffset   = 0;
 
 const PRESET_EXEMPT_ARR = __PRESET_EXEMPT_JSON__;
 const MODE_ICONS  = {"1":"&#128269;", "2":"&#128218;", "3":"&#127748;"};
-const MODE_NAMES  = {"1":"Deteksi Objek", "2":"Baca Teks (OCR)", "3":"Deskripsi Adegan"};
+const MODE_NAMES  = {"1":"Deteksi Objek", "2":"Baca Teks (OCR)", "3":"Deskripsi Adegan", "4":"Scan QRIS"};
 const MODE_COLORS = {
   "1": {badge:"bg-blue-900/30 text-blue-300 border-blue-800"},
   "2": {badge:"bg-green-900/30 text-green-300 border-green-800"},
@@ -1792,7 +2043,7 @@ async function ctrlMode(m) {
   } catch(e) { console.error(e); }
   // Update scan button state
   const scanBtn = document.getElementById("scan-btn");
-  if (m === 2 || m === 3) {
+  if (m === 2 || m === 3 || m === 4) {
     scanBtn.classList.remove("opacity-40", "cursor-not-allowed");
     scanBtn.disabled = false;
   } else {
@@ -1826,6 +2077,7 @@ function _updateCtrlBtns(active) {
     1: {id:"cb-mode1", on:"bg-blue-900/30 border-blue-800 text-blue-300",   off:"bg-gray-800 border-gray-700 text-gray-300"},
     2: {id:"cb-mode2", on:"bg-green-900/30 border-green-800 text-green-300", off:"bg-gray-800 border-gray-700 text-gray-300"},
     3: {id:"cb-mode3", on:"bg-purple-900/30 border-purple-800 text-purple-300", off:"bg-gray-800 border-gray-700 text-gray-300"},
+    4: {id:"cb-mode4", on:"bg-amber-900/30 border-amber-800 text-amber-300", off:"bg-gray-800 border-gray-700 text-gray-300"},
   };
   for (const [m, c] of Object.entries(configs)) {
     const btn = document.getElementById(c.id);
