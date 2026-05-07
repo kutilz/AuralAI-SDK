@@ -5,13 +5,139 @@ Berjalan di Thread 2 (selalu aktif).
 
 import json
 import os
+import signal
+import subprocess
+import sys
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from functools import partial
 
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+_DEVICE_DIR = os.path.dirname(os.path.dirname(__file__))
 
+
+# ─── Benchmark Runner ──────────────────────────────────────────────────────────
+
+class BenchmarkRunner:
+    STATUS_FILE = '/tmp/benchmark_progress.json'
+
+    def __init__(self):
+        self._proc = None
+        self._lock = threading.Lock()
+
+    def start(self, section=None):
+        with self._lock:
+            if self._proc and self._proc.poll() is None:
+                return False, 'Already running'
+            try:
+                # Clear old progress
+                try:
+                    with open(self.STATUS_FILE, 'w') as f:
+                        json.dump({'running': True, 'section': -1, 'lines': [], 'results': {}}, f)
+                except Exception:
+                    pass
+
+                script = os.path.join(_DEVICE_DIR, 'benchmark.py')
+                args   = [sys.executable, script]
+                if section is not None:
+                    args += ['--section', str(section)]
+                self._proc = subprocess.Popen(
+                    args,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    cwd=_DEVICE_DIR,
+                )
+                return True, f'Started PID {self._proc.pid}'
+            except Exception as e:
+                return False, str(e)
+
+    def stop(self):
+        with self._lock:
+            if self._proc and self._proc.poll() is None:
+                self._proc.terminate()
+                return True, 'Stopped'
+            return False, 'Not running'
+
+    def status(self):
+        with self._lock:
+            proc_running = self._proc is not None and self._proc.poll() is None
+        try:
+            with open(self.STATUS_FILE) as f:
+                data = json.load(f)
+            # proc is authoritative for running state
+            data['running'] = proc_running or data.get('running', False)
+            return data
+        except Exception:
+            return {'running': proc_running, 'section': -1, 'lines': [], 'results': {}}
+
+
+# ─── Stress Runner ─────────────────────────────────────────────────────────────
+
+class StressRunner:
+    STATUS_FILE = '/tmp/overnight_status.json'
+    STOP_FILE   = '/tmp/overnight_stop'
+    PID_FILE    = '/tmp/overnight_pid'
+
+    def start(self, hours=3):
+        # Check if already running via pid file
+        if os.path.exists(self.PID_FILE):
+            try:
+                with open(self.PID_FILE) as f:
+                    pid = int(f.read().strip())
+                os.kill(pid, 0)  # raises if dead
+                return False, f'Already running (PID {pid})'
+            except (ProcessLookupError, ValueError, OSError):
+                pass  # stale pid file
+
+        try: os.remove(self.STOP_FILE)
+        except FileNotFoundError: pass
+
+        script = os.path.join(_DEVICE_DIR, 'overnight_stress.py')
+        proc   = subprocess.Popen(
+            [sys.executable, script, '--hours', str(hours)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            cwd=_DEVICE_DIR,
+            start_new_session=True,
+        )
+        try:
+            with open(self.PID_FILE, 'w') as f:
+                f.write(str(proc.pid))
+        except Exception:
+            pass
+        return True, f'Started PID {proc.pid}'
+
+    def stop(self):
+        try: open(self.STOP_FILE, 'w').close()
+        except Exception: pass
+        try:
+            if os.path.exists(self.PID_FILE):
+                with open(self.PID_FILE) as f:
+                    pid = int(f.read().strip())
+                os.kill(pid, signal.SIGTERM)
+        except Exception:
+            pass
+        return True, 'Stop signal sent'
+
+    def status(self):
+        try:
+            with open(self.STATUS_FILE) as f:
+                return json.load(f)
+        except Exception:
+            return {
+                'running': False, 'elapsed_s': 0, 'fps': 0.0,
+                'temp_c': 0.0, 'ram_free_mb': 0,
+                'throttle_events': 0, 'frames_total': 0,
+            }
+
+
+# ─── Module-level singletons ───────────────────────────────────────────────────
+_benchmark = BenchmarkRunner()
+_stress    = StressRunner()
+
+
+# ─── Request Handler ───────────────────────────────────────────────────────────
 
 class AuralAIHandler(BaseHTTPRequestHandler):
     """HTTP request handler untuk semua endpoint AuralAI."""
@@ -23,8 +149,7 @@ class AuralAIHandler(BaseHTTPRequestHandler):
         super().__init__(*args, **kwargs)
 
     def log_message(self, format, *args):
-        # Suppress default HTTPServer logging — gunakan logger kita
-        pass
+        pass  # suppress default HTTPServer logging
 
     def do_GET(self):
         path = self.path.split("?")[0]
@@ -41,9 +166,17 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             self._serve_status()
         elif path == "/logs":
             self._serve_logs()
+        elif path == "/health":
+            self._serve_health()
         elif path.startswith("/audio/"):
             self._serve_audio(path[7:])
-        # ── Data Collection endpoints ────────────────────────────────
+        # ── Benchmark endpoints ────────────────────────────────────────────────
+        elif path == "/benchmark/status":
+            self._send_json(_benchmark.status())
+        # ── Stress endpoints ───────────────────────────────────────────────────
+        elif path == "/stress/status":
+            self._send_json(_stress.status())
+        # ── Data Collection endpoints ──────────────────────────────────────────
         elif path == "/collect" or path == "/collect/":
             self._serve_file("collect.html", "text/html")
         elif path == "/collect/status":
@@ -62,6 +195,19 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             self._handle_command()
         elif path == "/config":
             self._handle_config()
+        # ── Benchmark ─────────────────────────────────────────────────────────
+        elif path == "/benchmark/run":
+            self._handle_benchmark_run()
+        elif path == "/benchmark/stop":
+            ok, msg = _benchmark.stop()
+            self._send_json({"ok": ok, "message": msg})
+        # ── Stress ────────────────────────────────────────────────────────────
+        elif path == "/stress/start":
+            self._handle_stress_start()
+        elif path == "/stress/stop":
+            ok, msg = _stress.stop()
+            self._send_json({"ok": ok, "message": msg})
+        # ── Data Collection ───────────────────────────────────────────────────
         elif path == "/collect/start":
             self._handle_collect_start()
         elif path == "/collect/stop":
@@ -70,7 +216,6 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             self._send_404()
 
     def do_OPTIONS(self):
-        # CORS preflight
         self.send_response(200)
         self._set_cors_headers()
         self.end_headers()
@@ -80,7 +225,7 @@ class AuralAIHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
-    # ─── Endpoints ────────────────────────────────────────────────────────────
+    # ─── Core endpoints ────────────────────────────────────────────────────────
 
     def _serve_file(self, filename, content_type):
         filepath = os.path.join(STATIC_DIR, filename)
@@ -111,17 +256,21 @@ class AuralAIHandler(BaseHTTPRequestHandler):
 
     def _serve_status(self):
         status = self.orch.get_status()
-
-        # Tambah audio text jika ada
-        audio = self.orch.pop_audio()
+        audio  = self.orch.pop_audio()
         if audio:
             status["audio_text"] = audio
-
         self._send_json(status)
 
     def _serve_logs(self):
         logs = self.orch.logger.get_recent(50)
         self._send_json({"logs": logs})
+
+    def _serve_health(self):
+        try:
+            from utils.health import get_health
+            self._send_json(get_health())
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
 
     def _serve_audio(self, filename):
         from config import AUDIO_DIR
@@ -167,13 +316,36 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length)
             data = json.loads(body)
-            # Config update (bisa dikembangkan)
             self.logger.info(f"Config update: {data}")
             self._send_json({"ok": True})
         except Exception as e:
             self._send_json({"error": str(e)}, 500)
 
-    # ─── Data Collection endpoints ────────────────────────────────────────────
+    # ─── Benchmark endpoints ───────────────────────────────────────────────────
+
+    def _handle_benchmark_run(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            data   = json.loads(self.rfile.read(length)) if length else {}
+            section = data.get("section")  # None = all sections
+            ok, msg = _benchmark.start(section)
+            self._send_json({"ok": ok, "message": msg})
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
+
+    # ─── Stress endpoints ──────────────────────────────────────────────────────
+
+    def _handle_stress_start(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            data   = json.loads(self.rfile.read(length)) if length else {}
+            hours  = float(data.get("hours", 3))
+            ok, msg = _stress.start(hours)
+            self._send_json({"ok": ok, "message": msg})
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
+
+    # ─── Data Collection endpoints ─────────────────────────────────────────────
 
     def _serve_collect_status(self):
         if self.dc is None:
@@ -230,7 +402,7 @@ class AuralAIHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send_json({"error": str(e)}, 500)
 
-    # ─── Helpers ──────────────────────────────────────────────────────────────
+    # ─── Helpers ───────────────────────────────────────────────────────────────
 
     def _send_json(self, data, status=200):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -245,6 +417,8 @@ class AuralAIHandler(BaseHTTPRequestHandler):
         self._send_json({"error": "not found"}, 404)
 
 
+# ─── WebServer ─────────────────────────────────────────────────────────────────
+
 class WebServer:
     def __init__(self, host, port, orchestrator, logger, data_collector=None):
         self.host = host
@@ -255,6 +429,6 @@ class WebServer:
 
     def start(self):
         handler = partial(AuralAIHandler, self.orch, self.logger, self.data_collector)
-        server = HTTPServer((self.host, self.port), handler)
+        server  = HTTPServer((self.host, self.port), handler)
         self.logger.ok(f"Web server listening on {self.host}:{self.port}")
         server.serve_forever()

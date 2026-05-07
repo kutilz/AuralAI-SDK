@@ -1338,6 +1338,243 @@ body {
 
 .lt-report-row span:last-child { color: var(--accent); }
 
+/* ═══ HEALTH BAR ════════════════════════════════════════════ */
+
+.health-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 14px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  flex-wrap: wrap;
+}
+
+.health-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--text3);
+  white-space: nowrap;
+}
+
+.health-items {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  flex-wrap: wrap;
+}
+
+.health-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.health-key {
+  font-size: 10px;
+  color: var(--text3);
+  white-space: nowrap;
+}
+
+.health-val {
+  font-size: 12px;
+  color: var(--text);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.health-sep { color: var(--border); font-size: 12px; }
+
+.health-temp.temp-ok   { color: var(--green); }
+.health-temp.temp-warm { color: var(--orange); }
+.health-temp.temp-hot  { color: var(--red); }
+
+.health-mini-bar {
+  width: 40px;
+  height: 6px;
+  background: var(--bg4);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.health-mini-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+  transition: width 0.5s ease, background 0.3s;
+}
+
+.health-mini-fill.warn { background: var(--orange); }
+.health-mini-fill.crit { background: var(--red); }
+
+/* ═══ OVERNIGHT STRESS ══════════════════════════════════════ */
+
+.stress-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.stress-duration-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stress-progress-card {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.stress-progress-header { display: flex; flex-direction: column; gap: 8px; }
+
+.stress-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stress-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text3);
+  flex-shrink: 0;
+  transition: background 0.3s;
+}
+
+.stress-dot.running { background: var(--green); box-shadow: 0 0 6px var(--green); animation: dot-pulse 1.5s ease-in-out infinite; }
+.stress-dot.done    { background: var(--accent); }
+.stress-dot.error   { background: var(--red); }
+
+.stress-status-text {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text2);
+  flex: 1;
+}
+
+.stress-elapsed {
+  font-size: 11px;
+  color: var(--text3);
+  font-variant-numeric: tabular-nums;
+}
+
+.stress-progress-bar-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.stress-progress-bar {
+  flex: 1;
+  height: 8px;
+  background: var(--bg4);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.stress-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent2));
+  border-radius: 4px;
+  transition: width 1s ease;
+}
+
+.stress-progress-pct {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+  min-width: 36px;
+  text-align: right;
+}
+
+.stress-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+  gap: 8px;
+}
+
+.stress-stat {
+  background: var(--bg4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  text-align: center;
+}
+
+.stress-stat-key {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text3);
+  margin-bottom: 4px;
+}
+
+.stress-stat-val {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.stress-stat-small { font-size: 11px; }
+
+.stress-error {
+  background: rgba(239,68,68,0.08);
+  border: 1px solid rgba(239,68,68,0.3);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  font-size: 11px;
+  color: var(--red);
+}
+
+.stress-history {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stress-history-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--text3);
+}
+
+.stress-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.stress-history-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 11px;
+}
+
+.stress-hist-date { color: var(--text3); white-space: nowrap; }
+.stress-hist-dur  { color: var(--text2); }
+.stress-hist-fps  { color: var(--accent); font-weight: 700; flex: 1; }
+.stress-hist-thr  { color: var(--orange); }
+.stress-hist-ok   { color: var(--green); }
+
 /* ===== RESPONSIVE ===== */
 @media (max-width: 700px) {
   .main-grid {

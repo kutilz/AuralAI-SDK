@@ -28,6 +28,44 @@
       </div>
     </header>
 
+    <!-- HEALTH BAR -->
+    <div class="health-bar" id="healthBar">
+      <div class="health-label">DEVICE:</div>
+      <div class="health-items">
+        <div class="health-item">
+          <span class="health-key">CPU</span>
+          <span class="health-val health-temp" id="hTemp">--°C</span>
+        </div>
+        <div class="health-sep">|</div>
+        <div class="health-item">
+          <span class="health-key">RAM</span>
+          <div class="health-mini-bar"><div class="health-mini-fill" id="hRamFill"></div></div>
+          <span class="health-val" id="hRam">-- MB</span>
+        </div>
+        <div class="health-sep">|</div>
+        <div class="health-item">
+          <span class="health-key">Disk</span>
+          <div class="health-mini-bar"><div class="health-mini-fill" id="hDiskFill"></div></div>
+          <span class="health-val" id="hDisk">-- MB</span>
+        </div>
+        <div class="health-sep">|</div>
+        <div class="health-item">
+          <span class="health-key">Load</span>
+          <span class="health-val" id="hLoad">--</span>
+        </div>
+        <div class="health-sep">|</div>
+        <div class="health-item">
+          <span class="health-key">Freq</span>
+          <span class="health-val" id="hFreq">-- MHz</span>
+        </div>
+        <div class="health-sep">|</div>
+        <div class="health-item">
+          <span class="health-key">Up</span>
+          <span class="health-val" id="hUptime">--</span>
+        </div>
+      </div>
+    </div>
+
     <!-- MAIN GRID -->
     <main class="main-grid">
 
@@ -357,66 +395,91 @@
         </div>
       </div>
 
-      <!-- ─── TAB: LONG-TERM ────────────────────────────────── -->
+      <!-- ─── TAB: OVERNIGHT STRESS ───────────────────────── -->
       <div class="bench-panel" id="panelLongterm" style="display:none;">
 
+        <!-- Info header -->
         <div class="lt-header">
           <div class="lt-schedule-info">
-            <span class="lt-label">Jadwal:</span>
-            <span class="lt-val">3 jam/hari × 5 hari = <strong>15 jam total</strong></span>
+            <span class="lt-label">Pipeline:</span>
+            <span class="lt-val">Camera → YOLO11 → Annotate → JPEG (full loop)</span>
           </div>
           <div class="lt-schedule-info">
-            <span class="lt-label">Pipeline:</span>
-            <span class="lt-val">Camera → YOLO → Annotate → JPEG</span>
+            <span class="lt-label">Status file:</span>
+            <span class="lt-val">/tmp/overnight_status.json</span>
           </div>
-        </div>
-
-        <!-- 5-Day Calendar -->
-        <div class="lt-calendar" id="ltCalendar">
-          <!-- dirender oleh JS -->
-        </div>
-
-        <!-- Current Day Progress -->
-        <div class="lt-progress-section" id="ltProgressSection">
-          <div class="lt-progress-header">
-            <span id="ltDayLabel">Day 1 / 5</span>
-            <span id="ltTimeLabel">0.0 / 3.0 jam</span>
-          </div>
-          <div class="lt-progress-bar-wrap">
-            <div class="lt-progress-bar">
-              <div class="lt-progress-fill" id="ltProgressFill" style="width:0%"></div>
-            </div>
-            <span class="lt-progress-pct" id="ltProgressPct">0%</span>
-          </div>
-
-          <!-- Live stats during session -->
-          <div class="lt-live-stats" id="ltLiveStats" style="display:none;">
-            <div class="lt-stat"><span class="lt-stat-key">FPS</span><span class="lt-stat-val" id="lt-fps">—</span></div>
-            <div class="lt-stat"><span class="lt-stat-key">Frames</span><span class="lt-stat-val" id="lt-frames">—</span></div>
-            <div class="lt-stat"><span class="lt-stat-key">Temp CPU</span><span class="lt-stat-val" id="lt-temp">—</span></div>
-            <div class="lt-stat"><span class="lt-stat-key">RAM Free</span><span class="lt-stat-val" id="lt-ram">—</span></div>
-            <div class="lt-stat"><span class="lt-stat-key">Throttle</span><span class="lt-stat-val" id="lt-throttle">—</span></div>
-          </div>
-
-          <!-- Checkpoint log -->
-          <div class="lt-checkpoint-log" id="ltCheckpointLog"></div>
         </div>
 
         <!-- Controls -->
-        <div class="lt-controls">
-          <button class="bench-btn bench-btn-primary" id="btnLtStart" onclick="ltStartSession()">
-            ▶ Start Sesi Hari Ini
+        <div class="stress-controls">
+          <div class="stress-duration-row">
+            <span class="bench-lbl">Durasi:</span>
+            <input class="bench-num-input" type="number" id="stressDuration" value="3" min="0.5" max="24" step="0.5">
+            <span class="bench-lbl">jam</span>
+          </div>
+          <button class="bench-btn bench-btn-primary" id="btnStressStart" onclick="stressStart()">
+            ▶ Start Stress Test
           </button>
-          <button class="bench-btn" id="btnLtReport" onclick="ltShowReport()">
-            📊 Lihat Laporan
-          </button>
-          <button class="bench-btn bench-btn-danger" onclick="ltReset()">
-            ↺ Reset
+          <button class="bench-btn bench-btn-danger" id="btnStressStop" onclick="stressStop()" disabled>
+            ■ Stop
           </button>
         </div>
 
-        <!-- 5-day report (shown after all days done) -->
-        <div class="lt-report" id="ltReport" style="display:none;"></div>
+        <!-- Live progress -->
+        <div class="stress-progress-card" id="stressProgressCard">
+          <div class="stress-progress-header">
+            <div class="stress-status-row">
+              <span class="stress-dot" id="stressDot"></span>
+              <span class="stress-status-text" id="stressStatusText">Idle</span>
+              <span class="stress-elapsed" id="stressElapsed">—</span>
+            </div>
+            <div class="stress-progress-bar-wrap">
+              <div class="stress-progress-bar">
+                <div class="stress-progress-fill" id="stressProgressFill" style="width:0%"></div>
+              </div>
+              <span class="stress-progress-pct" id="stressProgressPct">0%</span>
+            </div>
+          </div>
+
+          <!-- Live stat grid -->
+          <div class="stress-stat-grid">
+            <div class="stress-stat">
+              <div class="stress-stat-key">FPS</div>
+              <div class="stress-stat-val" id="st-fps">—</div>
+            </div>
+            <div class="stress-stat">
+              <div class="stress-stat-key">Frames</div>
+              <div class="stress-stat-val" id="st-frames">—</div>
+            </div>
+            <div class="stress-stat">
+              <div class="stress-stat-key">Temp</div>
+              <div class="stress-stat-val" id="st-temp">—</div>
+            </div>
+            <div class="stress-stat">
+              <div class="stress-stat-key">RAM Free</div>
+              <div class="stress-stat-val" id="st-ram">—</div>
+            </div>
+            <div class="stress-stat">
+              <div class="stress-stat-key">Throttle</div>
+              <div class="stress-stat-val" id="st-throttle">—</div>
+            </div>
+            <div class="stress-stat">
+              <div class="stress-stat-key">Started</div>
+              <div class="stress-stat-val stress-stat-small" id="st-started">—</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Error display -->
+        <div class="stress-error" id="stressError" style="display:none;"></div>
+
+        <!-- Session history (localStorage) -->
+        <div class="stress-history" id="stressHistory">
+          <div class="stress-history-title">Riwayat Sesi</div>
+          <div class="stress-history-list" id="stressHistoryList">
+            <div style="color:var(--text3);font-size:11px;text-align:center;padding:12px;">Belum ada sesi</div>
+          </div>
+        </div>
 
       </div>
 
