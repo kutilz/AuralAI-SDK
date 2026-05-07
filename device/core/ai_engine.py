@@ -79,7 +79,7 @@ class AIEngine:
         detections = []
 
         if self._model_loaded:
-            result = self._detector.detect(frame, conf_threshold=CONF_THRESHOLD, iou_threshold=IOU_THRESHOLD)
+            result = self._detector.detect(frame, conf_th=CONF_THRESHOLD, iou_th=IOU_THRESHOLD)
             t_infer = (time.time() - t1) * 1000
 
             t2 = time.time()
