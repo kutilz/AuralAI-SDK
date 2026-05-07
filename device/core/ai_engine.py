@@ -17,7 +17,7 @@ from config import (
     INPUT_WIDTH, INPUT_HEIGHT, CAMERA_FPS,
     OPENAI_API_KEY, OPENAI_MODEL, OPENAI_TIMEOUT_S,
     PROMPT_SCENE, PROMPT_QRIS,
-    RELEVANT_LABELS,
+    RELEVANT_LABELS, COCO_LABEL_MAP,
 )
 from utils.logger import position_from_bbox
 
@@ -86,7 +86,7 @@ class AIEngine:
             frame_area = INPUT_WIDTH * INPUT_HEIGHT
 
             for det in result:
-                label = det.class_name
+                label = COCO_LABEL_MAP.get(det.class_id, str(det.class_id))
                 if label not in RELEVANT_LABELS:
                     continue
 
