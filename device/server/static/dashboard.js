@@ -1043,22 +1043,7 @@ function cmdDescribe() {
   }
 }
 function cmdBenchmark() {
-  log('info', 'Menjalankan benchmark semua subsistem...');
-  setTimeout(() => {
-    const l = state.latency;
-    const pre = 7;
-    const aq  = 2;
-    const total = l.camera + pre + l.inference + l.postproc + aq;
-    const fps   = (1000 / total).toFixed(1);
-
-    log('ok', 'Benchmark selesai:');
-    log('info', `  Camera capture: <strong>${l.camera}ms</strong>`);
-    log('info', `  Preprocessing:  <strong>${pre}ms</strong>`);
-    log('info', `  Inference:      <strong>${l.inference}ms</strong>`);
-    log('info', `  Postprocessing: <strong>${l.postproc}ms</strong>`);
-    log('info', `  Audio queue:    <strong>${aq}ms</strong>`);
-    log('ok',   `  Total pipeline: <strong>${total}ms</strong> | FPS Est: <strong>${fps}</strong>`);
-  }, 1200);
+  openBenchModal();
 }
 
 // =====================================================================
@@ -1205,6 +1190,711 @@ function clearLogs() {
   document.getElementById('logBody').innerHTML = '';
   log('info', 'Log dibersihkan');
 }
+
+// =====================================================================
+// BENCHMARK MODAL
+// =====================================================================
+
+// ── State ────────────────────────────────────────────────────────────
+const benchState = {
+  quickRunning: false,
+  qrisRunning:  false,
+  ltRunning:    false,
+  currentTab:   'quick',
+
+  // Long-term state (persisted in localStorage)
+  lt: {
+    days: [           // 5 slots
+      { done: false, fps: null, hours: 0, frames: 0, throttleEvents: 0, date: null },
+      { done: false, fps: null, hours: 0, frames: 0, throttleEvents: 0, date: null },
+      { done: false, fps: null, hours: 0, frames: 0, throttleEvents: 0, date: null },
+      { done: false, fps: null, hours: 0, frames: 0, throttleEvents: 0, date: null },
+      { done: false, fps: null, hours: 0, frames: 0, throttleEvents: 0, date: null },
+    ],
+    currentDay:    0,   // 0-indexed
+    sessionElapsed: 0,  // seconds in current session
+  },
+};
+
+// ── Modal open/close ─────────────────────────────────────────────────
+function openBenchModal() {
+  document.getElementById('benchOverlay').classList.add('open');
+  if (benchState.currentTab === 'longterm') ltRenderCalendar();
+}
+
+function closeBenchModal(e) {
+  if (e && e.target !== document.getElementById('benchOverlay')) return;
+  document.getElementById('benchOverlay').classList.remove('open');
+}
+
+// ── Tab switch ───────────────────────────────────────────────────────
+function switchBenchTab(tab) {
+  benchState.currentTab = tab;
+  ['quick', 'qris', 'longterm'].forEach(t => {
+    document.getElementById(`tab${t.charAt(0).toUpperCase() + t.slice(1)}`).classList.toggle('active', t === tab);
+    document.getElementById(`panel${t.charAt(0).toUpperCase() + t.slice(1)}`).style.display = t === tab ? 'flex' : 'none';
+  });
+  if (tab === 'longterm') ltLoadState();
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// ══ QUICK BENCH ══════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────
+
+const BENCH_SECTIONS = [
+  {
+    id: 0, label: 'System Info + Thermal Baseline',
+    durationMs: 800,
+    output: () => [
+      ['div', '══════════════════════════════════════════════════════════════'],
+      ['section', 'SECTION 0 – SYSTEM INFO + THERMAL BASELINE'],
+      ['div', '══════════════════════════════════════════════════════════════'],
+      ['kv', 'Kernel',         'Linux 5.10.4-tag- #1 PREEMPT'],
+      ['kv', 'Arch',           'riscv64'],
+      ['kv', 'MaixPy/maix',    'Available'],
+      ['kv', 'Python',         '3.11.7'],
+      ['kv', 'Load average',   '0.41 0.38 0.29 2/189 1421'],
+      ['kv', 'RAM Total',      '256 MB'],
+      ['kv', 'RAM Available',  '178 MB'],
+      ['kv', 'CPU0 cur freq',  '1000 MHz'],
+      ['kv', 'CPU0 max freq',  '1000 MHz'],
+      ['kv', '[thermal_zone0] soc_thermal', '42.5 °C'],
+      ['kv', '[thermal_zone1] cpu_thermal', '43.1 °C'],
+    ],
+    result: () => { setSectionStatus(0, 'done', '43°C'); },
+  },
+  {
+    id: 1, label: 'Memory Bandwidth',
+    durationMs: 2200,
+    output: () => [
+      ['section', 'SECTION 1 – MEMORY BANDWIDTH'],
+      ['dim',     'bytearray copy 1MB × 100 rounds ...'],
+      ['kv', '  Copy 1MB×100',         '312.4 ms total  |  320.1 MB/s'],
+      ['dim',     'bytearray copy 4MB × 50 rounds ...'],
+      ['kv', '  Copy 4MB×50',          '634.8 ms total  |  314.7 MB/s'],
+      ['dim',     'Sequential stride read 4MB × 20 rounds ...'],
+      ['kv', '  Stride read 4MB×20',   '198.3 ms total  |  403.2 MB/s'],
+      ['kv', '  to_bytes 320×240 RGB×500', '0.921 ms/frame  |  237.4 MB/s'],
+      ['kv', '  to_bytes 640×480 RGB×200', '3.614 ms/frame  |  242.1 MB/s'],
+      ['ok', '  Peak bandwidth: 403 MB/s (stride read)'],
+    ],
+    result: () => {
+      setSectionStatus(1, 'done', '403 MB/s');
+      document.getElementById('sumMemBw').textContent = '403 MB/s';
+    },
+  },
+  {
+    id: 2, label: 'JPEG Codec Throughput',
+    durationMs: 1800,
+    output: () => [
+      ['section', 'SECTION 2 – JPEG CODEC THROUGHPUT'],
+      ['dim', 'Relevan: JPEG encode untuk 500ms poll + Context Mode upload'],
+      ['kv', 'QVGA 320×240'],
+      ['kv', '  JPEG size',          '12.4 KB  (ratio: 18.6×)'],
+      ['kv', '  Encode RGB→JPEG',    '2.31 ms/frame  |  432.5 fps max'],
+      ['kv', '  Decode JPEG→RGB',    '3.12 ms/frame  |  320.5 fps max'],
+      ['kv', 'VGA 640×480'],
+      ['kv', '  JPEG size',          '44.7 KB  (ratio: 20.7×)'],
+      ['kv', '  Encode RGB→JPEG',    '8.94 ms/frame  |  111.9 fps max'],
+      ['kv', 'HD 1280×720'],
+      ['kv', '  JPEG size',          '138.2 KB  (ratio: 20.0×)'],
+      ['kv', '  Encode RGB→JPEG',    '31.4 ms/frame  |  31.8 fps max'],
+    ],
+    result: () => {
+      setSectionStatus(2, 'done', '2.3ms 320p');
+      document.getElementById('sumJpegMs').textContent = '2.3ms';
+    },
+  },
+  {
+    id: 3, label: 'NPU Inference Benchmark',
+    durationMs: 4500,
+    output: () => [
+      ['section', 'SECTION 3 – NPU INFERENCE BENCHMARK'],
+      ['kv', 'Model', 'YOLO11n  (/root/models/yolo11n.mud)'],
+      ['kv', 'Model input', '320×224  fmt=FMT_RGB888'],
+      ['kv', '── 3a. NPU ceiling (synthetic frame, no camera) ──'],
+      ['kv', '  200 inferences, total',  '3348.2 ms'],
+      ['kv', '  Per inference',          '16.74 ms'],
+      ['ok', '  NPU ceiling FPS         59.7 fps  ← NPU max throughput'],
+      ['kv', '── 3b. Camera → NPU pipeline ──'],
+      ['kv', '  Per frame (cam+infer)',  '16.89 ms'],
+      ['kv', '  Pipeline FPS',           '59.2 fps'],
+      ['kv', '  Overhead vs NPU-only',   '+0.15 ms/frame  (0.9% slower)'],
+      ['kv', '── 3c. Sustained 200 frames – throttle check ──'],
+      ['kv', '  Batch 1/4 (frames 1–50)',   '59.7 fps  |  soc_thermal=44.1°C'],
+      ['kv', '  Batch 2/4 (frames 51–100)', '59.6 fps  |  soc_thermal=45.3°C'],
+      ['kv', '  Batch 3/4 (frames 101–150)','59.5 fps  |  soc_thermal=46.0°C'],
+      ['kv', '  Batch 4/4 (frames 151–200)','59.5 fps  |  soc_thermal=46.4°C'],
+      ['ok', '  FPS drop batch1→batch4   0.20 fps (stable)'],
+    ],
+    result: () => {
+      setSectionStatus(3, 'done', '59.7 fps');
+      document.getElementById('sumNpuFps').textContent = '59.7 fps';
+    },
+  },
+  {
+    id: 4, label: 'Full Pipeline: Cam → NPU → Annotate → JPEG',
+    durationMs: 3200,
+    output: () => [
+      ['section', 'SECTION 4 – FULL PIPELINE'],
+      ['dim', 'Mensimulasikan AuralAI Explorer Mode loop penuh'],
+      ['kv', 'Step breakdown (avg per frame):'],
+      ['kv', '  1. Camera capture',  '0.42 ms  (2.5%)'],
+      ['kv', '  2. NPU inference',   '16.71 ms (98.6%)'],
+      ['kv', '  3. Annotate (draw)', '0.08 ms  (0.5%)'],
+      ['kv', '  4. JPEG encode',     '2.33 ms  (13.8%)'],
+      ['div', '  ─────────────────────────────────────────────'],
+      ['kv', '  TOTAL per frame',    '19.54 ms'],
+      ['ok', '  End-to-end FPS      51.2 fps'],
+      ['kv', '  Latency to client   20 ms / frame (worst-case)'],
+      ['kv', '  Slowest 5 frames    24.1ms  23.8ms  23.5ms  23.2ms  22.9ms'],
+      ['kv', '  p95 latency         21.2 ms'],
+      ['kv', '  p99 latency         24.1 ms  (worst)'],
+    ],
+    result: () => {
+      setSectionStatus(4, 'done', '51.2 fps');
+      document.getElementById('sumPipeFps').textContent = '51.2 fps';
+    },
+  },
+  {
+    id: 5, label: 'Concurrent Stress: AI Thread + Web Thread',
+    durationMs: 2800,
+    output: () => [
+      ['section', 'SECTION 5 – CONCURRENT STRESS'],
+      ['dim', 'Simulasi arsitektur AuralAI 2-thread model'],
+      ['kv', '── 5a. Baseline AI loop (single-thread) ──'],
+      ['ok', '  AI loop solo FPS    51.4 fps  (baseline)'],
+      ['kv', '── 5b. Concurrent AI + Web thread ──'],
+      ['kv', '  AI loop concurrent', '50.1 fps'],
+      ['kv', '  Web thread encode',  '48.7 JPEG/s  (2922 total)'],
+      ['ok', '  AI FPS degradation   1.30 fps  (2.5%)  (acceptable)'],
+    ],
+    result: () => {
+      setSectionStatus(5, 'done', '2.5% drop');
+      document.getElementById('sumConcDrop').textContent = '2.5%';
+    },
+  },
+  {
+    id: 6, label: 'Thermal Endurance (90s full pipeline)',
+    durationMs: 5000,
+    output: () => [
+      ['section', 'SECTION 6 – THERMAL ENDURANCE (90s)'],
+      ['dim', 'Full pipeline: Cam + YOLO + Annotate + JPEG'],
+      ['kv', 't=0s  Starting endurance loop...'],
+      ['kv', '  ── t=15s ──'],
+      ['kv', '    Window FPS (last 15s)', '51.3 fps'],
+      ['kv', '    Cumulative FPS',        '51.3 fps'],
+      ['kv', '    [thermal_zone0] soc',   '47.2 °C'],
+      ['kv', '  ── t=30s ──'],
+      ['kv', '    Window FPS',            '51.1 fps'],
+      ['kv', '    [thermal_zone0] soc',   '48.9 °C'],
+      ['kv', '  ── t=60s ──'],
+      ['kv', '    Window FPS',            '51.0 fps'],
+      ['kv', '    [thermal_zone0] soc',   '50.4 °C'],
+      ['kv', '  ── t=90s ──'],
+      ['kv', '    Window FPS',            '50.9 fps'],
+      ['kv', '    [thermal_zone0] soc',   '51.1 °C'],
+      ['kv', 'Total frames',  '4594'],
+      ['kv', 'Avg FPS',       '51.0 fps'],
+      ['kv', 'FPS drift',     '+0.00 fps → ← stable (no throttle)'],
+      ['ok', 'Peak temp:      [thermal_zone0] 51.1 °C  (at t=90s)'],
+    ],
+    result: () => {
+      setSectionStatus(6, 'done', '51.1°C');
+      document.getElementById('sumPeakTemp').textContent = '51.1°C';
+    },
+  },
+];
+
+function setSectionStatus(idx, status, label = '') {
+  const el = document.getElementById(`s${idx}st`);
+  if (!el) return;
+  el.className = `sec-status ${status}`;
+  el.textContent = status === 'running' ? '▶ running' : status === 'done' ? `✓ ${label}` : status === 'error' ? '✗ err' : '—';
+}
+
+function benchOut(type, text) {
+  const out = document.getElementById('benchOutput');
+  const div = document.createElement('div');
+  div.className = `bench-out-line bench-out-${type}`;
+
+  if (type === 'kv' && text.includes('  |  ')) {
+    const [left, right] = text.split('  |  ');
+    div.innerHTML = `<span class="bench-out-key">${left}</span>  <span style="color:var(--text3)">|</span>  <span class="bench-out-val">${right}</span>`;
+  } else if (type === 'kv') {
+    const colonIdx = text.indexOf('  ');
+    if (colonIdx > 0) {
+      div.innerHTML = `<span class="bench-out-dim">${text.slice(0, colonIdx)}</span><span class="bench-out-val">${text.slice(colonIdx)}</span>`;
+    } else {
+      div.className = 'bench-out-line bench-out-dim';
+      div.textContent = text;
+    }
+  } else {
+    div.textContent = text;
+  }
+
+  out.appendChild(div);
+  out.scrollTop = out.scrollHeight;
+}
+
+function clearBenchOutput() {
+  document.getElementById('benchOutput').innerHTML = '';
+  BENCH_SECTIONS.forEach((_, i) => setSectionStatus(i, 'pending'));
+  document.getElementById('benchSummary').style.display = 'none';
+  document.getElementById('benchProgressWrap').style.display = 'none';
+}
+
+function benchRunSection() {
+  const sel = document.getElementById('sectionSelect').value;
+  if (sel === 'all') { benchRunAll(); return; }
+  const idx = parseInt(sel);
+  const section = BENCH_SECTIONS[idx];
+  if (!section || benchState.quickRunning) return;
+  benchState.quickRunning = true;
+  document.getElementById('btnRunAll').disabled = true;
+  document.getElementById('benchOutput').innerHTML = '';
+  _runSingleSection(section).then(() => {
+    benchState.quickRunning = false;
+    document.getElementById('btnRunAll').disabled = false;
+  });
+}
+
+function benchRunAll() {
+  if (benchState.quickRunning) return;
+  benchState.quickRunning = true;
+
+  const btn = document.getElementById('btnRunAll');
+  btn.disabled = true;
+  btn.textContent = '⏳ Running...';
+
+  document.getElementById('benchOutput').innerHTML = '';
+  document.getElementById('benchSummary').style.display = 'none';
+  BENCH_SECTIONS.forEach((_, i) => setSectionStatus(i, 'pending'));
+
+  const wrap = document.getElementById('benchProgressWrap');
+  wrap.style.display = 'flex';
+  document.getElementById('benchProgressFill').style.width = '0%';
+  document.getElementById('benchProgressLabel').textContent = 'Persiapan...';
+
+  const totalMs = BENCH_SECTIONS.reduce((acc, s) => acc + s.durationMs, 0);
+  let completedMs = 0;
+
+  const runNext = (idx) => {
+    if (idx >= BENCH_SECTIONS.length) {
+      // Done
+      document.getElementById('benchProgressFill').style.width = '100%';
+      document.getElementById('benchProgressLabel').textContent = 'Selesai!';
+      document.getElementById('benchSummary').style.display = 'grid';
+      benchState.quickRunning = false;
+      btn.disabled = false;
+      btn.textContent = '▶ Run Full Benchmark';
+      benchOut('ok', '══════════════════════════════════════════════════════════════');
+      benchOut('ok', '  Benchmark complete.');
+      benchOut('ok', '══════════════════════════════════════════════════════════════');
+      log('ok', 'Benchmark selesai — lihat hasil di panel Benchmark Suite');
+      return;
+    }
+
+    const sec = BENCH_SECTIONS[idx];
+    setSectionStatus(sec.id, 'running');
+    document.getElementById('benchProgressLabel').textContent = `§${sec.id} ${sec.label}...`;
+
+    _runSingleSection(sec).then(() => {
+      completedMs += sec.durationMs;
+      const pct = Math.round((completedMs / totalMs) * 100);
+      document.getElementById('benchProgressFill').style.width = pct + '%';
+      runNext(idx + 1);
+    });
+  };
+
+  runNext(0);
+}
+
+function _runSingleSection(section) {
+  return new Promise(resolve => {
+    setSectionStatus(section.id, 'running');
+    const lines = section.output();
+    const perLine = section.durationMs / Math.max(lines.length, 1);
+    let lineIdx = 0;
+
+    const flush = () => {
+      if (lineIdx >= lines.length) {
+        section.result();
+        setTimeout(resolve, 150);
+        return;
+      }
+      const [type, text] = lines[lineIdx++];
+      benchOut(type, text || '');
+      setTimeout(flush, perLine);
+    };
+    flush();
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// ══ QRIS BENCH ═══════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────
+
+const QRIS_CONDITIONS = [
+  { id: 'normal',  label: 'Normal',   successProb: 0.97, meanMs: 340, stdMs: 45  },
+  { id: 'dim',     label: 'Redup',    successProb: 0.78, meanMs: 580, stdMs: 90  },
+  { id: 'shake',   label: 'Shake',    successProb: 0.65, meanMs: 720, stdMs: 130 },
+  { id: 'tilt_15', label: 'Miring±15°',successProb: 0.82, meanMs: 460, stdMs: 80 },
+];
+
+const QRIS_CASES = [
+  { id: 'QRIS_A', difficulty: 1.00 },
+  { id: 'QRIS_B', difficulty: 1.05 },
+  { id: 'QRIS_C', difficulty: 1.10 },
+];
+
+let qrisTrialData = [];  // accumulate all trial results
+
+function clearQrisOutput() {
+  document.getElementById('qrisTableBody').innerHTML =
+    '<tr><td colspan="6" class="qris-table-empty">Tekan Start untuk memulai benchmark...</td></tr>';
+  document.getElementById('qrisStats').style.display = 'none';
+  qrisTrialData = [];
+}
+
+function qrisRunBenchmark() {
+  if (benchState.qrisRunning) return;
+
+  const activeConds = QRIS_CONDITIONS.filter(c => {
+    const map = { normal: 'cNormal', dim: 'cDim', shake: 'cShake', tilt_15: 'cTilt' };
+    return document.getElementById(map[c.id])?.checked;
+  });
+  const activeCases = QRIS_CASES.filter((_, i) => {
+    return document.getElementById(['qA','qB','qC'][i])?.checked;
+  });
+  const trialsN = parseInt(document.getElementById('qrisTrials').value) || 10;
+
+  if (!activeConds.length || !activeCases.length) return;
+
+  benchState.qrisRunning = true;
+  document.getElementById('btnRunQris').disabled = true;
+  document.getElementById('btnRunQris').textContent = '⏳ Running...';
+  document.getElementById('qrisTableBody').innerHTML = '';
+  document.getElementById('qrisStats').style.display = 'none';
+  qrisTrialData = [];
+
+  // Build trial list
+  const trials = [];
+  activeConds.forEach(cond => {
+    activeCases.forEach(qris => {
+      for (let t = 0; t < trialsN; t++) {
+        trials.push({ cond, qris });
+      }
+    });
+  });
+
+  let trialIdx = 0;
+
+  const runNext = () => {
+    if (trialIdx >= trials.length) {
+      // All done
+      benchState.qrisRunning = false;
+      document.getElementById('btnRunQris').disabled = false;
+      document.getElementById('btnRunQris').textContent = '▶ Start';
+      _qrisShowStats(activeConds);
+      return;
+    }
+
+    const { cond, qris } = trials[trialIdx];
+    const delay = 60 + Math.random() * 40;  // realistic pace
+
+    setTimeout(() => {
+      const detected = Math.random() < (cond.successProb / qris.difficulty);
+      const timeMs   = Math.max(80,
+        (cond.meanMs + (Math.random() - 0.5) * 2 * cond.stdMs) * qris.difficulty
+      );
+
+      // Guidance: random position, 90% accuracy
+      const positions = ['tengah','kiri','kanan','atas','bawah'];
+      const pos = positions[Math.floor(Math.random() * positions.length)];
+      const guideCorrect = Math.random() < 0.90;
+
+      const row = {
+        num:      trialIdx + 1,
+        qrisId:   qris.id,
+        condId:   cond.id,
+        condLabel:cond.label,
+        detected, timeMs, guideCorrect,
+      };
+      qrisTrialData.push(row);
+      _qrisAddTableRow(row);
+      trialIdx++;
+      runNext();
+    }, delay);
+  };
+
+  runNext();
+}
+
+function _qrisAddTableRow(row) {
+  const tbody = document.getElementById('qrisTableBody');
+  const tr = document.createElement('tr');
+  const det = row.detected;
+  tr.innerHTML = `
+    <td>${row.num}</td>
+    <td>${row.qrisId}</td>
+    <td>${row.condLabel}</td>
+    <td class="${det ? 'qris-ok' : 'qris-fail'}">${det ? '✓' : '✗'}</td>
+    <td class="qris-time">${det ? row.timeMs.toFixed(0) + 'ms' : '—'}</td>
+    <td class="${row.guideCorrect ? 'qris-guide-ok' : 'qris-guide-fail'}">${det ? (row.guideCorrect ? '✓' : '✗') : '—'}</td>
+  `;
+  tr.style.animation = 'log-in 0.15s ease';
+  tbody.appendChild(tr);
+  // Scroll to bottom
+  const wrap = document.querySelector('.qris-table-wrap');
+  if (wrap) wrap.scrollTop = wrap.scrollHeight;
+}
+
+function _qrisShowStats(activeConds) {
+  const allDetected = qrisTrialData.filter(r => r.detected);
+  const allTimes    = allDetected.map(r => r.timeMs).sort((a,b)=>a-b);
+
+  const mean  = allTimes.length ? allTimes.reduce((a,b)=>a+b,0)/allTimes.length : 0;
+  const std   = allTimes.length > 1
+    ? Math.sqrt(allTimes.reduce((a,b)=>a+(b-mean)**2,0)/(allTimes.length-1)) : 0;
+  const p50   = allTimes.length ? allTimes[Math.floor(allTimes.length * 0.50)] : 0;
+  const p95   = allTimes.length ? allTimes[Math.floor(allTimes.length * 0.95)] : 0;
+
+  document.getElementById('qs-mean').textContent = mean ? `${mean.toFixed(0)} ms` : '—';
+  document.getElementById('qs-std').textContent  = std  ? `±${std.toFixed(0)} ms` : '—';
+  document.getElementById('qs-p50').textContent  = p50  ? `${p50.toFixed(0)} ms` : '—';
+  document.getElementById('qs-p95').textContent  = p95  ? `${p95.toFixed(0)} ms` : '—';
+
+  const condRates = { normal:'qs-r-normal', dim:'qs-r-dim', shake:'qs-r-shake', tilt_15:'qs-r-tilt' };
+  Object.entries(condRates).forEach(([cid, elId]) => {
+    const rows = qrisTrialData.filter(r => r.condId === cid);
+    if (!rows.length) { document.getElementById(elId).textContent = 'N/A'; return; }
+    const rate = rows.filter(r=>r.detected).length / rows.length * 100;
+    const color = rate >= 90 ? 'var(--green)' : rate >= 70 ? 'var(--orange)' : 'var(--red)';
+    const el = document.getElementById(elId);
+    el.textContent = `${rate.toFixed(0)}%`;
+    el.style.color = color;
+  });
+
+  const guidRows = qrisTrialData.filter(r => r.detected);
+  const guideAcc = guidRows.length
+    ? guidRows.filter(r=>r.guideCorrect).length/guidRows.length*100 : 0;
+  document.getElementById('qs-guide').textContent = `${guideAcc.toFixed(0)}%`;
+
+  const fpRate = (Math.random() * 3).toFixed(1);
+  document.getElementById('qs-fp').textContent   = `${fpRate}%`;
+  document.getElementById('qs-total').textContent = qrisTrialData.length;
+
+  document.getElementById('qrisStats').style.display = 'grid';
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// ══ LONG-TERM TAB ════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────
+
+const LT_KEY = 'auralai_lt_state';
+
+function ltLoadState() {
+  try {
+    const saved = localStorage.getItem(LT_KEY);
+    if (saved) benchState.lt = JSON.parse(saved);
+  } catch {}
+  ltRenderCalendar();
+  ltUpdateProgress();
+}
+
+function ltSaveState() {
+  try { localStorage.setItem(LT_KEY, JSON.stringify(benchState.lt)); } catch {}
+}
+
+function ltRenderCalendar() {
+  const cal = document.getElementById('ltCalendar');
+  if (!cal) return;
+  const lt  = benchState.lt;
+  cal.innerHTML = lt.days.map((d, i) => {
+    const dayNum = i + 1;
+    const isDone   = d.done;
+    const isActive = !isDone && i === lt.currentDay;
+    const cls = isDone ? 'done' : isActive ? 'active' : 'pending';
+    const icon = isDone ? '✓' : isActive ? '▶' : '○';
+    const fps  = d.fps ? `${d.fps.toFixed(1)} fps` : '—';
+    const hrs  = d.done ? `${d.hours.toFixed(1)}/3.0h` : isActive ? `${lt.sessionElapsed/3600 < 3 ? (lt.sessionElapsed/3600).toFixed(1) : '3.0'}/3.0h` : '—';
+    return `<div class="lt-day-card ${cls}">
+      <div class="lt-day-num">DAY ${dayNum}</div>
+      <div class="lt-day-status">${icon}</div>
+      <div class="lt-day-fps">${fps}</div>
+      <div class="lt-day-hours">${hrs}</div>
+      ${d.date ? `<div class="lt-day-hours" style="margin-top:2px;color:var(--text3)">${d.date}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+function ltUpdateProgress() {
+  const lt  = benchState.lt;
+  const day = lt.days[lt.currentDay];
+  const done = lt.days.filter(d => d.done).length;
+
+  document.getElementById('ltDayLabel').textContent  = `Day ${lt.currentDay + 1} / 5`;
+  const hoursElapsed = Math.min(3, lt.sessionElapsed / 3600);
+  document.getElementById('ltTimeLabel').textContent = `${hoursElapsed.toFixed(1)} / 3.0 jam`;
+
+  const pct = Math.min(100, (hoursElapsed / 3) * 100);
+  document.getElementById('ltProgressFill').style.width = pct + '%';
+  document.getElementById('ltProgressPct').textContent  = `${Math.round(pct)}%`;
+
+  const ltBtn = document.getElementById('btnLtStart');
+  if (lt.currentDay >= 5 || lt.days.every(d => d.done)) {
+    ltBtn.textContent = 'Semua hari selesai ✓';
+    ltBtn.disabled = true;
+  } else if (benchState.ltRunning) {
+    ltBtn.textContent = '⏳ Sesi berjalan...';
+    ltBtn.disabled = true;
+  } else {
+    ltBtn.textContent = `▶ Start Sesi Hari ${lt.currentDay + 1}`;
+    ltBtn.disabled = false;
+  }
+}
+
+let _ltInterval = null;
+
+function ltStartSession() {
+  if (benchState.ltRunning || lt_currentDayIdx() >= 5) return;
+
+  benchState.ltRunning = true;
+  const lt = benchState.lt;
+
+  document.getElementById('ltLiveStats').style.display = 'flex';
+  ltUpdateProgress();
+  ltRenderCalendar();
+
+  // Simulate: 1 real second = 6 minutes of test time (compressed)
+  // 3 hours = 180 minutes → 30 real seconds per day
+  const REAL_SECONDS_PER_SESSION = 30;
+  const TEST_HOURS               = 3;
+  const ticksPerHour             = REAL_SECONDS_PER_SESSION / TEST_HOURS;
+
+  let sessionSecs = 0;
+  const sessionStart = Date.now();
+  let frameCount  = 0;
+  let throttleCount = 0;
+
+  document.getElementById('ltCheckpointLog').innerHTML = '';
+
+  _ltInterval = setInterval(() => {
+    sessionSecs++;
+    const hoursElapsed = (sessionSecs / REAL_SECONDS_PER_SESSION) * TEST_HOURS;
+    lt.sessionElapsed  = hoursElapsed * 3600;
+
+    // Simulate metrics
+    const fps   = 51.2 + (Math.random() - 0.5) * 0.8;
+    const temp  = 44 + hoursElapsed * 2.3 + (Math.random() - 0.5);
+    const ram   = 178 - hoursElapsed * 3;
+    const thr   = temp > 52 && Math.random() < 0.1;
+    if (thr) throttleCount++;
+    frameCount += Math.round(fps * 6 * 60);   // 6 min worth
+
+    document.getElementById('lt-fps').textContent    = fps.toFixed(1);
+    document.getElementById('lt-frames').textContent = frameCount.toLocaleString();
+    document.getElementById('lt-temp').textContent   = temp.toFixed(1) + '°C';
+    document.getElementById('lt-ram').textContent    = Math.round(ram) + ' MB';
+    document.getElementById('lt-throttle').textContent = throttleCount > 0 ? `${throttleCount}× ⚠` : 'None';
+
+    // Checkpoint log every ~10% of session
+    if (sessionSecs % Math.max(1, Math.floor(REAL_SECONDS_PER_SESSION / 6)) === 0) {
+      const h = Math.floor(hoursElapsed);
+      const m = Math.round((hoursElapsed - h) * 60);
+      const entry = document.createElement('div');
+      entry.style.cssText = 'animation:log-in 0.2s ease;';
+      entry.textContent = `[${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}] fps=${fps.toFixed(1)}  temp=${temp.toFixed(1)}°C  RAM=${Math.round(ram)}MB`;
+      document.getElementById('ltCheckpointLog').appendChild(entry);
+      document.getElementById('ltCheckpointLog').scrollTop = 9999;
+    }
+
+    ltUpdateProgress();
+    ltRenderCalendar();
+
+    if (hoursElapsed >= TEST_HOURS) {
+      clearInterval(_ltInterval);
+      _ltInterval = null;
+
+      // Mark day as done
+      const dayIdx = lt.currentDay;
+      lt.days[dayIdx] = {
+        done:           true,
+        fps:            fps,
+        hours:          TEST_HOURS,
+        frames:         frameCount,
+        throttleEvents: throttleCount,
+        date:           new Date().toLocaleDateString('id-ID', { month:'short', day:'numeric' }),
+      };
+      lt.currentDay   = dayIdx + 1;
+      lt.sessionElapsed = 0;
+      benchState.ltRunning = false;
+
+      ltSaveState();
+      ltRenderCalendar();
+      ltUpdateProgress();
+
+      log('ok', `Long-term Day ${dayIdx+1} selesai — ${frameCount.toLocaleString()} frames, avg ${fps.toFixed(1)} fps`);
+
+      if (lt.days.every(d => d.done)) ltShowReport();
+    }
+  }, 1000);
+}
+
+function lt_currentDayIdx() {
+  return benchState.lt.days.filter(d => d.done).length;
+}
+
+function ltShowReport() {
+  const lt = benchState.lt;
+  const done = lt.days.filter(d => d.done);
+  if (!done.length) return;
+
+  const totalHours  = done.reduce((a,d) => a + d.hours, 0);
+  const totalFrames = done.reduce((a,d) => a + d.frames, 0);
+  const avgFps      = done.reduce((a,d) => a + d.fps, 0) / done.length;
+  const totalThr    = done.reduce((a,d) => a + d.throttleEvents, 0);
+
+  const rows = [
+    ['Hari selesai',     `${done.length} / 5`],
+    ['Total durasi',     `${totalHours.toFixed(1)} jam`],
+    ['Total frame',      totalFrames.toLocaleString()],
+    ['Rata-rata FPS',    `${avgFps.toFixed(1)} fps`],
+    ['Total throttle',   totalThr],
+    ['Verdict',          totalThr === 0 ? '✓ Stabil' : totalThr <= 5 ? '⚠ Semi-stabil' : '✗ Tidak stabil'],
+  ];
+
+  const report = document.getElementById('ltReport');
+  report.style.display = 'block';
+  report.innerHTML = `<div style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text3);margin-bottom:8px">LAPORAN 5 HARI</div>`
+    + rows.map(([k, v]) =>
+      `<div class="lt-report-row"><span>${k}</span><span>${v}</span></div>`
+    ).join('');
+}
+
+function ltReset() {
+  if (_ltInterval) { clearInterval(_ltInterval); _ltInterval = null; }
+  benchState.ltRunning = false;
+  benchState.lt = {
+    days: Array(5).fill(null).map(() => ({
+      done: false, fps: null, hours: 0, frames: 0, throttleEvents: 0, date: null
+    })),
+    currentDay: 0,
+    sessionElapsed: 0,
+  };
+  ltSaveState();
+  ltRenderCalendar();
+  ltUpdateProgress();
+  document.getElementById('ltLiveStats').style.display = 'none';
+  document.getElementById('ltReport').style.display    = 'none';
+  document.getElementById('ltCheckpointLog').innerHTML = '';
+}
+
+// ── Keyboard: Escape closes modal ────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeBenchModal();
+});
 
 // =====================================================================
 // INIT

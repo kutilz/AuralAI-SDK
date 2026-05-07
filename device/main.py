@@ -22,6 +22,7 @@ from config import WEB_HOST, WEB_PORT
 from core.orchestrator import Orchestrator
 from server.web_server import WebServer
 from utils.logger import Logger
+from modes.data_collection_mode import DataCollector
 
 
 def main():
@@ -33,12 +34,16 @@ def main():
     # Shared state antara thread AI dan Web Server
     orchestrator = Orchestrator(logger=logger)
 
+    # Data collector (mode pengambilan dataset)
+    data_collector = DataCollector(logger=logger)
+
     # Thread 2: Web Server (selalu jalan)
     web_server = WebServer(
         host=WEB_HOST,
         port=WEB_PORT,
         orchestrator=orchestrator,
         logger=logger,
+        data_collector=data_collector,
     )
     web_thread = threading.Thread(
         target=web_server.start,

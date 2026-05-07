@@ -187,7 +187,247 @@
       <button class="mock-close" onclick="document.getElementById('mockBanner').style.display='none'">✕</button>
     </div>
 
-  </div>
+  </div><!-- end .app -->
+
+  <!-- ═══════════════════════════════════════════════════════════
+       BENCHMARK MODAL
+       ═══════════════════════════════════════════════════════════ -->
+  <div class="bench-overlay" id="benchOverlay" onclick="closeBenchModal(event)">
+    <div class="bench-modal" id="benchModal">
+
+      <!-- Modal Header -->
+      <div class="bench-header">
+        <div class="bench-header-left">
+          <span class="bench-logo">◈</span>
+          <div>
+            <div class="bench-title">AuralAI Benchmark Suite</div>
+            <div class="bench-subtitle">MaixCAM SG2002 / RISC-V C906 + NPU 1TOPS</div>
+          </div>
+        </div>
+        <button class="bench-close" onclick="closeBenchModal()">✕</button>
+      </div>
+
+      <!-- Tab Navigation -->
+      <div class="bench-tabs">
+        <button class="bench-tab active" id="tabQuick"    onclick="switchBenchTab('quick')">
+          <span class="bench-tab-icon">⚡</span> Quick Bench
+        </button>
+        <button class="bench-tab"        id="tabQris"     onclick="switchBenchTab('qris')">
+          <span class="bench-tab-icon">⬛</span> QRIS Bench
+        </button>
+        <button class="bench-tab"        id="tabLongterm" onclick="switchBenchTab('longterm')">
+          <span class="bench-tab-icon">🗓</span> Long-term (5 Hari)
+        </button>
+      </div>
+
+      <!-- ─── TAB: QUICK BENCH ──────────────────────────────── -->
+      <div class="bench-panel" id="panelQuick">
+
+        <div class="bench-toolbar">
+          <button class="bench-btn bench-btn-primary" id="btnRunAll" onclick="benchRunAll()">
+            ▶ Run Full Benchmark
+          </button>
+          <div class="bench-section-sel">
+            <span class="bench-lbl">Section:</span>
+            <select class="bench-select" id="sectionSelect">
+              <option value="all">Semua (0-7)</option>
+              <option value="0">§0 System Info</option>
+              <option value="1">§1 Memory Bandwidth</option>
+              <option value="2">§2 JPEG Codec</option>
+              <option value="3">§3 NPU Inference</option>
+              <option value="4">§4 Full Pipeline</option>
+              <option value="5">§5 Concurrent Stress</option>
+              <option value="6">§6 Thermal Endurance</option>
+            </select>
+            <button class="bench-btn" onclick="benchRunSection()">▶ Run</button>
+          </div>
+          <button class="bench-btn" onclick="clearBenchOutput()">Clear</button>
+        </div>
+
+        <!-- Section Status Cards -->
+        <div class="bench-sections" id="benchSections">
+          <div class="bench-sec-card" id="sec0"><span class="sec-num">§0</span><span class="sec-name">System Info</span><span class="sec-status pending" id="s0st">—</span></div>
+          <div class="bench-sec-card" id="sec1"><span class="sec-num">§1</span><span class="sec-name">Memory BW</span><span class="sec-status pending" id="s1st">—</span></div>
+          <div class="bench-sec-card" id="sec2"><span class="sec-num">§2</span><span class="sec-name">JPEG Codec</span><span class="sec-status pending" id="s2st">—</span></div>
+          <div class="bench-sec-card" id="sec3"><span class="sec-num">§3</span><span class="sec-name">NPU Infer</span><span class="sec-status pending" id="s3st">—</span></div>
+          <div class="bench-sec-card" id="sec4"><span class="sec-num">§4</span><span class="sec-name">Full Pipeline</span><span class="sec-status pending" id="s4st">—</span></div>
+          <div class="bench-sec-card" id="sec5"><span class="sec-num">§5</span><span class="sec-name">Concurrent</span><span class="sec-status pending" id="s5st">—</span></div>
+          <div class="bench-sec-card" id="sec6"><span class="sec-num">§6</span><span class="sec-name">Thermal 90s</span><span class="sec-status pending" id="s6st">—</span></div>
+        </div>
+
+        <!-- Progress bar -->
+        <div class="bench-progress-wrap" id="benchProgressWrap" style="display:none;">
+          <div class="bench-progress-bar">
+            <div class="bench-progress-fill" id="benchProgressFill"></div>
+          </div>
+          <span class="bench-progress-label" id="benchProgressLabel">Menjalankan...</span>
+        </div>
+
+        <!-- Output terminal -->
+        <div class="bench-output" id="benchOutput">
+          <div class="bench-output-hint">Tekan <strong>▶ Run Full Benchmark</strong> untuk memulai...</div>
+        </div>
+
+        <!-- Summary cards (shown after run) -->
+        <div class="bench-summary" id="benchSummary" style="display:none;">
+          <div class="bench-sum-card">
+            <div class="bench-sum-label">NPU Ceiling FPS</div>
+            <div class="bench-sum-val" id="sumNpuFps">—</div>
+          </div>
+          <div class="bench-sum-card">
+            <div class="bench-sum-label">Pipeline FPS</div>
+            <div class="bench-sum-val" id="sumPipeFps">—</div>
+          </div>
+          <div class="bench-sum-card">
+            <div class="bench-sum-label">Memory BW</div>
+            <div class="bench-sum-val" id="sumMemBw">—</div>
+          </div>
+          <div class="bench-sum-card">
+            <div class="bench-sum-label">JPEG Encode</div>
+            <div class="bench-sum-val" id="sumJpegMs">—</div>
+          </div>
+          <div class="bench-sum-card">
+            <div class="bench-sum-label">Concurrency Drop</div>
+            <div class="bench-sum-val" id="sumConcDrop">—</div>
+          </div>
+          <div class="bench-sum-card">
+            <div class="bench-sum-label">Peak Temp</div>
+            <div class="bench-sum-val" id="sumPeakTemp">—</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ─── TAB: QRIS BENCH ───────────────────────────────── -->
+      <div class="bench-panel" id="panelQris" style="display:none;">
+
+        <div class="bench-toolbar">
+          <div class="bench-filter-group">
+            <span class="bench-lbl">Kondisi:</span>
+            <label class="bench-chip"><input type="checkbox" checked id="cNormal"> Normal</label>
+            <label class="bench-chip"><input type="checkbox" checked id="cDim">    Redup</label>
+            <label class="bench-chip"><input type="checkbox" checked id="cShake">  Shake</label>
+            <label class="bench-chip"><input type="checkbox" checked id="cTilt">   Miring±15°</label>
+          </div>
+        </div>
+        <div class="bench-toolbar">
+          <div class="bench-filter-group">
+            <span class="bench-lbl">QRIS:</span>
+            <label class="bench-chip"><input type="checkbox" checked id="qA"> QRIS_A</label>
+            <label class="bench-chip"><input type="checkbox" checked id="qB"> QRIS_B</label>
+            <label class="bench-chip"><input type="checkbox" checked id="qC"> QRIS_C</label>
+          </div>
+          <div style="flex:1"></div>
+          <span class="bench-lbl">Trial/kondisi:</span>
+          <input class="bench-num-input" type="number" id="qrisTrials" value="10" min="5" max="50">
+          <button class="bench-btn bench-btn-primary" id="btnRunQris" onclick="qrisRunBenchmark()">▶ Start</button>
+          <button class="bench-btn" onclick="clearQrisOutput()">Clear</button>
+        </div>
+
+        <!-- QRIS Trial Table -->
+        <div class="qris-table-wrap">
+          <table class="qris-table" id="qrisTable">
+            <thead>
+              <tr>
+                <th>#</th><th>QRIS</th><th>Kondisi</th>
+                <th>Hasil</th><th>Waktu</th><th>Guidance</th>
+              </tr>
+            </thead>
+            <tbody id="qrisTableBody">
+              <tr><td colspan="6" class="qris-table-empty">Tekan Start untuk memulai benchmark...</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- QRIS Summary Stats -->
+        <div class="qris-stats" id="qrisStats" style="display:none;">
+          <div class="qris-stat-group">
+            <div class="qris-stat-title">Time-to-Detect</div>
+            <div class="qris-stat-row"><span>Mean</span><span id="qs-mean">—</span></div>
+            <div class="qris-stat-row"><span>Std Dev</span><span id="qs-std">—</span></div>
+            <div class="qris-stat-row"><span>p50</span><span id="qs-p50">—</span></div>
+            <div class="qris-stat-row"><span>p95</span><span id="qs-p95">—</span></div>
+          </div>
+          <div class="qris-stat-group">
+            <div class="qris-stat-title">Success Rate per Kondisi</div>
+            <div class="qris-stat-row"><span>Normal</span><span id="qs-r-normal">—</span></div>
+            <div class="qris-stat-row"><span>Redup</span><span id="qs-r-dim">—</span></div>
+            <div class="qris-stat-row"><span>Shake</span><span id="qs-r-shake">—</span></div>
+            <div class="qris-stat-row"><span>Miring±15°</span><span id="qs-r-tilt">—</span></div>
+          </div>
+          <div class="qris-stat-group">
+            <div class="qris-stat-title">Lainnya</div>
+            <div class="qris-stat-row"><span>Guidance Accuracy</span><span id="qs-guide">—</span></div>
+            <div class="qris-stat-row"><span>False Positive Rate</span><span id="qs-fp">—</span></div>
+            <div class="qris-stat-row"><span>Total Trial</span><span id="qs-total">—</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ─── TAB: LONG-TERM ────────────────────────────────── -->
+      <div class="bench-panel" id="panelLongterm" style="display:none;">
+
+        <div class="lt-header">
+          <div class="lt-schedule-info">
+            <span class="lt-label">Jadwal:</span>
+            <span class="lt-val">3 jam/hari × 5 hari = <strong>15 jam total</strong></span>
+          </div>
+          <div class="lt-schedule-info">
+            <span class="lt-label">Pipeline:</span>
+            <span class="lt-val">Camera → YOLO → Annotate → JPEG</span>
+          </div>
+        </div>
+
+        <!-- 5-Day Calendar -->
+        <div class="lt-calendar" id="ltCalendar">
+          <!-- dirender oleh JS -->
+        </div>
+
+        <!-- Current Day Progress -->
+        <div class="lt-progress-section" id="ltProgressSection">
+          <div class="lt-progress-header">
+            <span id="ltDayLabel">Day 1 / 5</span>
+            <span id="ltTimeLabel">0.0 / 3.0 jam</span>
+          </div>
+          <div class="lt-progress-bar-wrap">
+            <div class="lt-progress-bar">
+              <div class="lt-progress-fill" id="ltProgressFill" style="width:0%"></div>
+            </div>
+            <span class="lt-progress-pct" id="ltProgressPct">0%</span>
+          </div>
+
+          <!-- Live stats during session -->
+          <div class="lt-live-stats" id="ltLiveStats" style="display:none;">
+            <div class="lt-stat"><span class="lt-stat-key">FPS</span><span class="lt-stat-val" id="lt-fps">—</span></div>
+            <div class="lt-stat"><span class="lt-stat-key">Frames</span><span class="lt-stat-val" id="lt-frames">—</span></div>
+            <div class="lt-stat"><span class="lt-stat-key">Temp CPU</span><span class="lt-stat-val" id="lt-temp">—</span></div>
+            <div class="lt-stat"><span class="lt-stat-key">RAM Free</span><span class="lt-stat-val" id="lt-ram">—</span></div>
+            <div class="lt-stat"><span class="lt-stat-key">Throttle</span><span class="lt-stat-val" id="lt-throttle">—</span></div>
+          </div>
+
+          <!-- Checkpoint log -->
+          <div class="lt-checkpoint-log" id="ltCheckpointLog"></div>
+        </div>
+
+        <!-- Controls -->
+        <div class="lt-controls">
+          <button class="bench-btn bench-btn-primary" id="btnLtStart" onclick="ltStartSession()">
+            ▶ Start Sesi Hari Ini
+          </button>
+          <button class="bench-btn" id="btnLtReport" onclick="ltShowReport()">
+            📊 Lihat Laporan
+          </button>
+          <button class="bench-btn bench-btn-danger" onclick="ltReset()">
+            ↺ Reset
+          </button>
+        </div>
+
+        <!-- 5-day report (shown after all days done) -->
+        <div class="lt-report" id="ltReport" style="display:none;"></div>
+
+      </div>
+
+    </div><!-- end .bench-modal -->
+  </div><!-- end .bench-overlay -->
 
   <script src="dashboard.js"></script>
 </body>
