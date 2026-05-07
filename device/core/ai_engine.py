@@ -65,7 +65,22 @@ class AIEngine:
             return None, [], {}
 
         t0 = time.time()
-        frame = self._cam.read()
+        try:
+            frame = self._cam.read()
+        except RuntimeError as e:
+            self.logger.warn(f"Camera read failed ({e}) — mencoba reopen...")
+            try:
+                self._cam.close()
+            except Exception:
+                pass
+            time.sleep(0.3)
+            try:
+                self._cam.open()
+                frame = self._cam.read()
+                self.logger.ok("Camera recovered setelah reopen")
+            except Exception as e2:
+                self.logger.error(f"Camera reopen gagal: {e2}")
+                return None, [], {}
         t_cam = (time.time() - t0) * 1000
 
         # Simpan frame terbaru untuk keperluan scene description / QRIS
