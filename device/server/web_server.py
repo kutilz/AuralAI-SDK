@@ -16,9 +16,10 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 class AuralAIHandler(BaseHTTPRequestHandler):
     """HTTP request handler untuk semua endpoint AuralAI."""
 
-    def __init__(self, orchestrator, logger, *args, **kwargs):
+    def __init__(self, orchestrator, logger, data_collector, *args, **kwargs):
         self.orch = orchestrator
         self.logger = logger
+        self.dc = data_collector
         super().__init__(*args, **kwargs)
 
     def log_message(self, format, *args):
@@ -42,6 +43,15 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             self._serve_logs()
         elif path.startswith("/audio/"):
             self._serve_audio(path[7:])
+        # ── Data Collection endpoints ────────────────────────────────
+        elif path == "/collect" or path == "/collect/":
+            self._serve_file("collect.html", "text/html")
+        elif path == "/collect/status":
+            self._serve_collect_status()
+        elif path == "/collect/gallery":
+            self._serve_collect_gallery()
+        elif path.startswith("/collect/photo/"):
+            self._serve_collect_photo(path[len("/collect/photo/"):])
         else:
             self._send_404()
 
@@ -52,6 +62,10 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             self._handle_command()
         elif path == "/config":
             self._handle_config()
+        elif path == "/collect/start":
+            self._handle_collect_start()
+        elif path == "/collect/stop":
+            self._handle_collect_stop()
         else:
             self._send_404()
 
@@ -159,6 +173,63 @@ class AuralAIHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send_json({"error": str(e)}, 500)
 
+    # ─── Data Collection endpoints ────────────────────────────────────────────
+
+    def _serve_collect_status(self):
+        if self.dc is None:
+            self._send_json({"error": "data collector not available"}, 503)
+            return
+        self._send_json(self.dc.stats)
+
+    def _serve_collect_gallery(self):
+        if self.dc is None:
+            self._send_json({"photos": []})
+            return
+        self._send_json({"photos": self.dc.gallery})
+
+    def _serve_collect_photo(self, filename):
+        if self.dc is None:
+            self._send_404()
+            return
+        data = self.dc.serve_photo(filename)
+        if data is None:
+            self._send_404()
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", len(data))
+        self.send_header("Cache-Control", "no-cache")
+        self._set_cors_headers()
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _handle_collect_start(self):
+        if self.dc is None:
+            self._send_json({"error": "data collector not available"}, 503)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            data = {}
+            if length:
+                data = json.loads(self.rfile.read(length))
+            ok, msg = self.dc.start(
+                interval_s=data.get("interval_s"),
+                quality=data.get("quality"),
+            )
+            self._send_json({"ok": ok, "message": msg})
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
+
+    def _handle_collect_stop(self):
+        if self.dc is None:
+            self._send_json({"error": "data collector not available"}, 503)
+            return
+        try:
+            ok, msg = self.dc.stop()
+            self._send_json({"ok": ok, "message": msg})
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
+
     # ─── Helpers ──────────────────────────────────────────────────────────────
 
     def _send_json(self, data, status=200):
@@ -175,14 +246,15 @@ class AuralAIHandler(BaseHTTPRequestHandler):
 
 
 class WebServer:
-    def __init__(self, host, port, orchestrator, logger):
+    def __init__(self, host, port, orchestrator, logger, data_collector=None):
         self.host = host
         self.port = port
         self.orch = orchestrator
         self.logger = logger
+        self.data_collector = data_collector
 
     def start(self):
-        handler = partial(AuralAIHandler, self.orch, self.logger)
+        handler = partial(AuralAIHandler, self.orch, self.logger, self.data_collector)
         server = HTTPServer((self.host, self.port), handler)
         self.logger.ok(f"Web server listening on {self.host}:{self.port}")
         server.serve_forever()
