@@ -50,7 +50,7 @@ class AIEngine:
             self.logger.warn("MaixPy tidak tersedia — model tidak dimuat")
             return
         try:
-            self._detector = nn.YOLOv8(model=MODEL_PATH)
+            self._detector = nn.YOLO11(model=MODEL_PATH)
             self._model_loaded = True
             self.logger.ok(f"Model dimuat: {MODEL_PATH}")
         except Exception as e:
@@ -73,7 +73,7 @@ class AIEngine:
 
         # Simpan snapshot JPEG untuk Web UI
         jpeg = frame.to_jpeg()
-        self.orch.snapshot = bytes(jpeg)
+        self.orch.snapshot = bytes(jpeg.to_bytes())
 
         t1 = time.time()
         detections = []
@@ -142,7 +142,7 @@ class AIEngine:
             import json
 
             jpeg = frame.to_jpeg()
-            b64 = base64.b64encode(bytes(jpeg)).decode("utf-8")
+            b64 = base64.b64encode(bytes(jpeg.to_bytes())).decode("utf-8")
 
             payload = {
                 "model": OPENAI_MODEL,
@@ -195,7 +195,7 @@ class AIEngine:
             import json
 
             jpeg = frame.to_jpeg()
-            b64 = base64.b64encode(bytes(jpeg)).decode("utf-8")
+            b64 = base64.b64encode(bytes(jpeg.to_bytes())).decode("utf-8")
 
             payload = {
                 "model": OPENAI_MODEL,

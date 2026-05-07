@@ -28,7 +28,7 @@ import threading
 
 # ─── Konfigurasi default ──────────────────────────────────────────────────────
 
-DEFAULT_HOST = "maixcam.local"
+DEFAULT_HOST = "10.240.15.103"
 DEFAULT_PORT = 22
 DEFAULT_USER = "root"
 DEFAULT_PASS = "root"
