@@ -17,6 +17,11 @@ Usage:
     python tools/run.py --status               # Lihat status JSON (stress/overnight)
     python tools/run.py --host 192.168.1.100   # IP custom
     python tools/run.py --extra "--dry-run"    # Argumen tambahan ke script target
+
+  Autostart (boot otomatis):
+    python tools/run.py --autostart            # Set AuralAI sebagai app autostart saat boot
+    python tools/run.py --autostart-off        # Hapus autostart (boot ke launcher biasa)
+    python tools/run.py --autostart-status     # Lihat app autostart saat ini
 """
 
 import os
@@ -374,6 +379,128 @@ def show_status(client, mode_cfg):
     print()
 
 
+# ─── Autostart helpers ────────────────────────────────────────────────────────
+
+AUTOSTART_FILE = "/maixapp/auto_start.txt"
+APP_INFO_FILE  = "/maixapp/apps/app.info"
+AURALAI_APP_ID = "auralai_collect"
+
+# Entry yang didaftarkan ke app.info — exec menjalankan main.py
+AURALAI_APP_ENTRY = """
+[auralai_collect]
+name = AuralAI Collect
+name[zh] = AuralAI数据采集
+exec = python3 /root/aural-ai/main.py
+author = AuralAI
+desc = AuralAI assistive AI — web data collection server on port 8080
+desc[zh] = AI视觉辅助 — 数据采集服务器
+icon = /root/aural-ai/icon.png
+"""
+
+
+def _ssh(client, cmd):
+    """Jalankan command SSH, kembalikan stdout string."""
+    _, out, _ = client.exec_command(cmd)
+    return out.read().decode().strip()
+
+
+def autostart_status(client):
+    """Tampilkan app autostart saat ini di device."""
+    sep()
+    print(f"  {bold('🔍')} Autostart Status — MaixCAM")
+    sep()
+
+    # Baca auto_start.txt
+    current = _ssh(client, f"cat {AUTOSTART_FILE} 2>/dev/null || echo ''")
+    if current:
+        print(f"  {cyan('Autostart aktif')} : {bold(current)}")
+    else:
+        print(f"  {yellow('Tidak ada autostart')} (boot ke launcher biasa)")
+
+    # Apakah AuralAI sudah terdaftar di app.info?
+    registered = _ssh(
+        client,
+        f"grep -q '\\[{AURALAI_APP_ID}\\]' {APP_INFO_FILE} 2>/dev/null && echo yes || echo no"
+    )
+    if registered == "yes":
+        ok(f"AuralAI ({AURALAI_APP_ID}) terdaftar di app.info")
+    else:
+        warn(f"AuralAI belum terdaftar di app.info — jalankan --autostart untuk register")
+
+    print()
+
+
+def autostart_set(client, do_deploy=True):
+    """
+    1. Deploy kode terbaru (opsional)
+    2. Daftarkan AuralAI ke /maixapp/apps/app.info jika belum ada
+    3. Tulis /maixapp/auto_start.txt = auralai_collect
+    """
+    sep()
+    print(f"  {bold('⚡')} Set Autostart → {cyan(AURALAI_APP_ID)}")
+    sep()
+
+    if do_deploy:
+        deploy(client)
+
+    # ── Pastikan app.info ada ──────────────────────────────────────────────────
+    exists = _ssh(client, f"test -f {APP_INFO_FILE} && echo yes || echo no")
+    if exists != "yes":
+        err(f"{APP_INFO_FILE} tidak ditemukan — apakah MaixCAM sudah terformat dengan benar?")
+        return
+
+    # ── Daftarkan AuralAI jika belum ada di app.info ──────────────────────────
+    already = _ssh(
+        client,
+        f"grep -q '\\[{AURALAI_APP_ID}\\]' {APP_INFO_FILE} && echo yes || echo no"
+    )
+    if already == "yes":
+        ok(f"[{AURALAI_APP_ID}] sudah ada di app.info — skip registrasi")
+    else:
+        # Append entry ke app.info
+        entry_escaped = AURALAI_APP_ENTRY.replace("'", "'\\''")
+        _ssh(client, f"printf '{entry_escaped}' >> {APP_INFO_FILE} && sync")
+        ok(f"[{AURALAI_APP_ID}] berhasil didaftarkan ke app.info")
+
+    # ── Tulis auto_start.txt ───────────────────────────────────────────────────
+    _ssh(client, f"echo -n '{AURALAI_APP_ID}' > {AUTOSTART_FILE} && sync")
+
+    # Verifikasi
+    written = _ssh(client, f"cat {AUTOSTART_FILE}")
+    if written == AURALAI_APP_ID:
+        ok(f"Autostart diset ke: {bold(AURALAI_APP_ID)}")
+        print()
+        print(f"  {green('✓')} Device akan otomatis hosting web server saat boot.")
+        print(f"  {yellow('🌐')} Dashboard → http://{'{host}'}:8080")
+        print(f"  {yellow('🌐')} Data Collect → http://{'{host}'}:8080/collect")
+        print()
+        print(dim("  Untuk membatalkan: python tools/run.py --autostart-off"))
+    else:
+        err(f"Verifikasi gagal — isi auto_start.txt: '{written}'")
+
+
+def autostart_clear(client):
+    """Hapus /maixapp/auto_start.txt sehingga device boot ke launcher normal."""
+    sep()
+    print(f"  {bold('🗑')} Hapus Autostart")
+    sep()
+
+    exists = _ssh(client, f"test -f {AUTOSTART_FILE} && echo yes || echo no")
+    if exists != "yes":
+        warn("auto_start.txt sudah tidak ada — tidak ada yang perlu dihapus")
+        return
+
+    old = _ssh(client, f"cat {AUTOSTART_FILE}")
+    _ssh(client, f"rm -f {AUTOSTART_FILE} && sync")
+
+    verify = _ssh(client, f"test -f {AUTOSTART_FILE} && echo still || echo gone")
+    if verify == "gone":
+        ok(f"Autostart '{old}' dihapus — device akan boot ke launcher normal")
+    else:
+        err("Gagal menghapus auto_start.txt")
+    print()
+
+
 def list_modes():
     print(f"\n  {bold('Mode yang tersedia:')}\n")
     for key, m in MODES.items():
@@ -401,7 +528,11 @@ def main():
     parser.add_argument("--logs",       action="store_true", help="Tail log background")
     parser.add_argument("--status",     action="store_true", help="Tampilkan status proses")
     parser.add_argument("--list",       action="store_true", help="Tampilkan daftar mode")
-    parser.add_argument("--extra",      default="",          help='Argumen tambahan ke script, mis: "--dry-run"')
+    parser.add_argument("--extra",           default="",    help='Argumen tambahan ke script, mis: "--dry-run"')
+    # ── Autostart ──
+    parser.add_argument("--autostart",       action="store_true", help="Set AuralAI sebagai app autostart saat boot")
+    parser.add_argument("--autostart-off",   action="store_true", help="Hapus autostart")
+    parser.add_argument("--autostart-status",action="store_true", help="Lihat app autostart saat ini")
     args = parser.parse_args()
 
     print(bold("\n  AuralAI Runner"))
@@ -412,6 +543,25 @@ def main():
 
     mode_cfg = dict(MODES[args.mode])
     mode_cfg["_key"] = args.mode
+
+    # ── Autostart modes ──
+    if args.autostart_status:
+        client = connect(args.host, args.port, args.user, args.password)
+        autostart_status(client)
+        client.close()
+        return
+
+    if getattr(args, 'autostart_off', False):
+        client = connect(args.host, args.port, args.user, args.password)
+        autostart_clear(client)
+        client.close()
+        return
+
+    if args.autostart:
+        client = connect(args.host, args.port, args.user, args.password)
+        autostart_set(client, do_deploy=not args.no_deploy)
+        client.close()
+        return
 
     # ── Stop mode ──
     if args.stop:
