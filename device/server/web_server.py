@@ -314,10 +314,12 @@ class AuralAIHandler(BaseHTTPRequestHandler):
     def _handle_config(self):
         try:
             length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(length)
-            data = json.loads(body)
-            self.logger.info(f"Config update: {data}")
-            self._send_json({"ok": True})
+            body   = self.rfile.read(length)
+            data   = json.loads(body)
+            from config import cfg
+            cfg.update(data)
+            self.logger.info(f"Config updated: {list(data.keys())}")
+            self._send_json({"ok": True, "applied": list(data.keys())})
         except Exception as e:
             self._send_json({"error": str(e)}, 500)
 
