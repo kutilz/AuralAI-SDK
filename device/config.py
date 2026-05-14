@@ -24,9 +24,31 @@ _DEFAULTS: dict = {
     "audio_dir":                "/root/audio",
     "audio_cooldown_s":         2.0,
     "danger_area_threshold":    0.15,
+    # ── AI provider ───────────────────────────────────────────────────────────
+    # active provider: "openai" | "gemini" | "claude"
+    "ai_provider":              "openai",
+    "ai_timeout_s":             15,
+    # OpenAI
     "openai_api_key":           "",
     "openai_model":             "gpt-4o-mini",
-    "openai_timeout_s":         10,
+    "openai_timeout_s":         10,   # kept for backward-compat; ai_timeout_s is used
+    # Gemini
+    "gemini_api_key":           "",
+    "gemini_model":             "gemini-1.5-flash",
+    # Claude (Anthropic)
+    "claude_api_key":           "",
+    "claude_model":             "claude-haiku-4-5-20251001",
+    # Prompts (runtime-editable)
+    "prompt_scene": (
+        "Deskripsikan scene ini secara singkat dalam Bahasa Indonesia, "
+        "fokus pada objek yang relevan untuk pengguna tunanetra. "
+        "Maksimal 2 kalimat."
+    ),
+    "prompt_qris": (
+        "Baca kode QRIS ini. Sebutkan: nama merchant dan nominal jika ada. "
+        "Format: MERCHANT: [nama], NOMINAL: [angka]. "
+        "Jika bukan QRIS, jawab: BUKAN QRIS."
+    ),
     "log_path":                 "/root/logs",
     "log_max_lines":            500,
     "thermal_throttle_temp_c":  80.0,
@@ -154,6 +176,14 @@ class Config:
         return self.get("danger_area_threshold")
 
     @property
+    def AI_PROVIDER(self) -> str:
+        return self.get("ai_provider", "openai")
+
+    @property
+    def AI_TIMEOUT_S(self) -> int:
+        return self.get("ai_timeout_s", 15)
+
+    @property
     def OPENAI_API_KEY(self) -> str:
         return os.environ.get("OPENAI_API_KEY") or self.get("openai_api_key", "")
 
@@ -164,6 +194,22 @@ class Config:
     @property
     def OPENAI_TIMEOUT_S(self) -> int:
         return self.get("openai_timeout_s")
+
+    @property
+    def GEMINI_API_KEY(self) -> str:
+        return os.environ.get("GEMINI_API_KEY") or self.get("gemini_api_key", "")
+
+    @property
+    def GEMINI_MODEL(self) -> str:
+        return self.get("gemini_model", "gemini-1.5-flash")
+
+    @property
+    def CLAUDE_API_KEY(self) -> str:
+        return os.environ.get("ANTHROPIC_API_KEY") or self.get("claude_api_key", "")
+
+    @property
+    def CLAUDE_MODEL(self) -> str:
+        return self.get("claude_model", "claude-haiku-4-5-20251001")
 
     @property
     def LOG_PATH(self) -> str:
@@ -189,17 +235,13 @@ class Config:
     def BUTTON_PIN_MODE(self) -> int:
         return self.get("button_pin_mode")
 
-    # Prompts are not stored in JSON (no reason to make them runtime-editable)
-    PROMPT_SCENE = (
-        "Deskripsikan scene ini secara singkat dalam Bahasa Indonesia, "
-        "fokus pada objek yang relevan untuk pengguna tunanetra. "
-        "Maksimal 2 kalimat."
-    )
-    PROMPT_QRIS = (
-        "Baca kode QRIS ini. Sebutkan: nama merchant dan nominal jika ada. "
-        "Format: MERCHANT: [nama], NOMINAL: [angka]. "
-        "Jika bukan QRIS, jawab: BUKAN QRIS."
-    )
+    @property
+    def PROMPT_SCENE(self) -> str:
+        return self.get("prompt_scene", _DEFAULTS["prompt_scene"])
+
+    @property
+    def PROMPT_QRIS(self) -> str:
+        return self.get("prompt_qris", _DEFAULTS["prompt_qris"])
 
 
 # ─── Singleton ────────────────────────────────────────────────────────────────

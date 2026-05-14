@@ -1,12 +1,63 @@
 """
 System health reader + HealthMonitor daemon.
 Reads hardware metrics from /proc and /sys (no external deps).
+
+Battery support is optional: probed once at import time via I2C.
+If no battery HAT is detected, battery_info() returns {} and all
+battery-related audio warnings are silently disabled.
 """
 
 import os
 import time
 import threading
 from typing import Callable, Optional
+
+# ─── I2C battery HAT probe ───────────────────────────────────────────────────
+# Attempt to detect a common battery gauge IC (INA219 @ 0x40, MAX17043 @ 0x36,
+# or generic HAT @ 0x41/0x36) on /dev/i2c-1 or /dev/i2c-2.
+# One write + read is enough; we don't need a valid response.
+
+_BATTERY_HAT_PRESENT: bool = False
+_BATTERY_I2C_ADDR:    int  = 0x36   # typical fuel-gauge default address
+
+def _probe_i2c_battery() -> bool:
+    import fcntl, struct
+    I2C_SLAVE = 0x0703
+    candidates = [("/dev/i2c-1", 0x36), ("/dev/i2c-1", 0x40),
+                  ("/dev/i2c-2", 0x36), ("/dev/i2c-2", 0x40)]
+    for dev, addr in candidates:
+        if not os.path.exists(dev):
+            continue
+        try:
+            with open(dev, "rb", buffering=0) as f:
+                fcntl.ioctl(f, I2C_SLAVE, addr)
+                f.read(1)
+            return True
+        except Exception:
+            continue
+    return False
+
+try:
+    _BATTERY_HAT_PRESENT = _probe_i2c_battery()
+except Exception:
+    _BATTERY_HAT_PRESENT = False
+
+
+def battery_hat_present() -> bool:
+    """True if an I2C battery HAT was detected at startup."""
+    return _BATTERY_HAT_PRESENT
+
+
+def battery_info() -> dict:
+    """
+    Return battery metrics if a HAT is present, else empty dict.
+    Real implementation requires a HAT-specific driver; this stub
+    returns a placeholder so callers can check `if battery_info()`.
+    """
+    if not _BATTERY_HAT_PRESENT:
+        return {}
+    # TODO: implement HAT-specific register reads (INA219, MAX17043, etc.)
+    return {"present": True}
 
 
 # ─── Raw sysfs readers ────────────────────────────────────────────────────────

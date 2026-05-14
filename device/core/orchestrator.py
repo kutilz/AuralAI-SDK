@@ -150,12 +150,19 @@ class Orchestrator:
     # ─── Status snapshot ──────────────────────────────────────────────────────
 
     def get_status(self) -> dict:
+        audio_text = ""
+        if self.audio_manager:
+            try:
+                audio_text = self.audio_manager.current_text
+            except Exception:
+                pass
         with self._lock:
             return {
                 "mode":        self._mode,
                 "ai_focus":    self._ai_focus,
                 "detections":  list(self._detections),
                 "latency":     dict(self._latency),
+                "audio_text":  audio_text,
             }
 
     # ─── Mode switching ───────────────────────────────────────────────────────

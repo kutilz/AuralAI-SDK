@@ -78,6 +78,9 @@ class AudioManager:
 
         # Tracks priority of whatever is playing right now
         self._current_priority = LOW
+        # Text currently being played (exposed to status endpoint)
+        self._current_text: str = ""
+        self._text_lock = threading.Lock()
         # Set to interrupt ongoing playback sleep loop
         self._interrupt = threading.Event()
         self._stop      = threading.Event()
@@ -167,6 +170,11 @@ class AudioManager:
         )
         return pcm if ret == 0 and os.path.exists(pcm) else None
 
+    @property
+    def current_text(self) -> str:
+        with self._text_lock:
+            return self._current_text
+
     def _play_task(self, task: _Task):
         """Execute playback for one task; blocks until done or interrupted."""
         if task.label:
@@ -174,6 +182,8 @@ class AudioManager:
                 self._cooldown_map[task.label] = time.monotonic()
 
         self._current_priority = task.priority
+        with self._text_lock:
+            self._current_text = task.text
         self._interrupt.clear()
 
         played = False
@@ -186,9 +196,18 @@ class AudioManager:
             self.logger.info(f"[Audio fallback] {task.text}", module="AudioMgr")
 
         self._current_priority = LOW
+        with self._text_lock:
+            self._current_text = ""
 
     def _play_pcm(self, pcm_path: str) -> bool:
-        """Play PCM via maix.audio.Player with interrupt support."""
+        """
+        Play PCM via maix.audio.Player with interrupt support.
+
+        player.stop() is optional — some MaixPy builds lack it.
+        When stop() raises AttributeError we fall back to the deadline
+        timer: the current audio chunk finishes but we return immediately
+        so the higher-priority task starts as soon as possible.
+        """
         try:
             from maix import audio as maix_audio
         except ImportError:
@@ -209,6 +228,11 @@ class AudioManager:
                 if self._interrupt.is_set() or self._stop.is_set():
                     try:
                         player.stop()
+                    except AttributeError:
+                        # player.stop() not available — can't hard-stop;
+                        # return True immediately so the higher-priority task
+                        # starts without waiting for the full deadline.
+                        pass
                     except Exception:
                         pass
                     return True

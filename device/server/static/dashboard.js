@@ -391,31 +391,15 @@ function colorizeLatency(id, val, warnThresh, errThresh) {
 
 // ── Audio Display ──────────────────────────────────────────────────────────────
 // Device memainkan audio via speaker fisik; dashboard hanya menampilkan teks
-// dan opsional mengulang via Web Speech API untuk monitoring.
+// sebagai visual log — tidak ada browser audio.
 let _audioTimer = null;
 
 function showAudioText(text) {
-  document.getElementById('audioText').textContent  = text;
+  document.getElementById('audioText').textContent   = text;
   document.getElementById('audioStatus').textContent = '▶ Playing';
   document.getElementById('audioStatus').className   = 'badge badge-green';
-
-  // Monitor audio via Web Speech (opsional — matikan jika mengganggu)
-  if ('speechSynthesis' in window) {
-    window.speechSynthesis.cancel();
-    const utt  = new SpeechSynthesisUtterance(text);
-    utt.lang   = 'id-ID';
-    utt.rate   = 0.95;
-    const v    = window.speechSynthesis.getVoices().find(
-      v => v.lang.startsWith('id') || v.lang.startsWith('ms')
-    );
-    if (v) utt.voice = v;
-    utt.onend = () => resetAudioStatus();
-    utt.onerror = () => resetAudioStatus();
-    window.speechSynthesis.speak(utt);
-  } else {
-    clearTimeout(_audioTimer);
-    _audioTimer = setTimeout(resetAudioStatus, 2500);
-  }
+  clearTimeout(_audioTimer);
+  _audioTimer = setTimeout(resetAudioStatus, 2500);
 }
 
 function resetAudioStatus() {
@@ -458,7 +442,7 @@ function cmdQris() {
 }
 
 function cmdDescribe() {
-  log('info', 'Kirim ke OpenAI Vision...');
+  log('info', 'Kirim ke AI Vision...');
   document.getElementById('audioStatus').textContent = 'Processing...';
   document.getElementById('audioStatus').className   = 'badge badge-orange';
   sendCommand('describe');
@@ -1007,3 +991,115 @@ document.addEventListener('DOMContentLoaded', () => {
   // Render loop (canvas overlay)
   requestAnimationFrame(renderLoop);
 });
+
+// ══════════════════════════════════════════════════════════════════════════════
+// AI SETTINGS MODAL
+// ══════════════════════════════════════════════════════════════════════════════
+
+let _aiCurrentProvider = 'openai';
+
+function openAISettings() {
+  document.getElementById('aiSettingsOverlay').classList.add('open');
+  aiSettingsLoad();
+}
+
+function closeAISettings(e) {
+  if (e && e.target !== document.getElementById('aiSettingsOverlay')) return;
+  document.getElementById('aiSettingsOverlay').classList.remove('open');
+  document.getElementById('aiTestResult').textContent = '';
+  document.getElementById('aiTestResult').className   = 'ai-test-result';
+}
+
+function selectProvider(p) {
+  _aiCurrentProvider = p;
+  ['openai','gemini','claude'].forEach(name => {
+    document.getElementById(`provBtn_${name}`).classList.toggle('active', name === p);
+    document.getElementById(`aiSec_${name}`).style.display = name === p ? '' : 'none';
+  });
+}
+
+async function aiSettingsLoad() {
+  try {
+    const r = await fetch('/ai-settings');
+    const d = await r.json();
+
+    selectProvider(d.ai_provider || 'openai');
+    document.getElementById('aiTimeout').value     = d.ai_timeout_s  ?? 15;
+    document.getElementById('openaiModel').value   = d.openai_model  || 'gpt-4o-mini';
+    document.getElementById('geminiModel').value   = d.gemini_model  || 'gemini-1.5-flash';
+    document.getElementById('claudeModel').value   = d.claude_model  || 'claude-haiku-4-5-20251001';
+    document.getElementById('openaiKeyHint').textContent = d.openai_key_hint || '';
+    document.getElementById('geminiKeyHint').textContent = d.gemini_key_hint || '';
+    document.getElementById('claudeKeyHint').textContent = d.claude_key_hint || '';
+    document.getElementById('promptScene').value   = d.prompt_scene  || '';
+    document.getElementById('promptQris').value    = d.prompt_qris   || '';
+    // Clear key inputs (server never returns the actual key)
+    ['openaiKey','geminiKey','claudeKey'].forEach(id =>
+      document.getElementById(id).value = ''
+    );
+  } catch(e) {
+    log('err', `Gagal load AI settings: ${e}`);
+  }
+}
+
+async function aiSettingsSave() {
+  const payload = {
+    ai_provider:    _aiCurrentProvider,
+    ai_timeout_s:   parseInt(document.getElementById('aiTimeout').value) || 15,
+    openai_model:   document.getElementById('openaiModel').value,
+    gemini_model:   document.getElementById('geminiModel').value,
+    claude_model:   document.getElementById('claudeModel').value,
+    prompt_scene:   document.getElementById('promptScene').value.trim(),
+    prompt_qris:    document.getElementById('promptQris').value.trim(),
+  };
+  // Only send keys if user typed something
+  const oKey = document.getElementById('openaiKey').value.trim();
+  const gKey = document.getElementById('geminiKey').value.trim();
+  const cKey = document.getElementById('claudeKey').value.trim();
+  if (oKey) payload.openai_api_key = oKey;
+  if (gKey) payload.gemini_api_key = gKey;
+  if (cKey) payload.claude_api_key = cKey;
+
+  try {
+    const r = await fetch('/ai-settings', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(payload),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      log('ok', `AI settings disimpan (provider: ${payload.ai_provider})`);
+      closeAISettings();
+    } else {
+      log('err', `Gagal simpan: ${d.error}`);
+    }
+  } catch(e) {
+    log('err', `Save error: ${e}`);
+  }
+}
+
+async function aiSettingsTest() {
+  const btn = document.getElementById('btnAITest');
+  const res = document.getElementById('aiTestResult');
+  btn.disabled = true;
+  res.textContent = 'Testing...';
+  res.className   = 'ai-test-result';
+  try {
+    const r = await fetch('/ai-settings/test', { method: 'POST' });
+    const d = await r.json();
+    if (d.ok) {
+      res.textContent = `✓ OK — ${d.message}`;
+      res.className   = 'ai-test-result ok';
+      log('ok', `AI test berhasil: ${d.message}`);
+    } else {
+      res.textContent = `✗ ${d.message}`;
+      res.className   = 'ai-test-result err';
+      log('err', `AI test gagal: ${d.message}`);
+    }
+  } catch(e) {
+    res.textContent = `✗ ${e}`;
+    res.className   = 'ai-test-result err';
+  } finally {
+    btn.disabled = false;
+  }
+}

@@ -273,6 +273,8 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             self._serve_collect_gallery()
         elif path.startswith("/collect/photo/"):
             self._serve_collect_photo(path[len("/collect/photo/"):])
+        elif path == "/ai-settings":
+            self._serve_ai_settings()
         else:
             self._send_404()
 
@@ -309,6 +311,10 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             self._handle_collect_start()
         elif path == "/collect/stop":
             self._handle_collect_stop()
+        elif path == "/ai-settings":
+            self._handle_ai_settings_save()
+        elif path == "/ai-settings/test":
+            self._handle_ai_settings_test()
         else:
             self._send_404()
 
@@ -352,11 +358,7 @@ class AuralAIHandler(BaseHTTPRequestHandler):
         self.wfile.write(snap)
 
     def _serve_status(self):
-        status = self.orch.get_status()
-        audio  = self.orch.pop_audio()
-        if audio:
-            status["audio_text"] = audio
-        self._send_json(status)
+        self._send_json(self.orch.get_status())
 
     def _serve_logs(self):
         logs = self.orch.logger.get_recent(50)
@@ -515,6 +517,74 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": ok, "message": msg})
         except Exception as e:
             self._send_json({"error": str(e)}, 500)
+
+    # ─── AI Settings endpoints ─────────────────────────────────────────────────
+
+    def _serve_ai_settings(self):
+        from config import cfg
+        data = cfg.as_dict()
+        # Mask secrets — send only whether a key is set, not the value
+        def _masked(key: str) -> str:
+            v = data.get(key, "")
+            if not v:
+                return ""
+            return "***" + v[-4:] if len(v) > 4 else "****"
+
+        self._send_json({
+            "ai_provider":   data.get("ai_provider", "openai"),
+            "ai_timeout_s":  data.get("ai_timeout_s", 15),
+            "openai_model":  data.get("openai_model", "gpt-4o-mini"),
+            "openai_key_set": bool(data.get("openai_api_key")),
+            "openai_key_hint": _masked("openai_api_key"),
+            "gemini_model":  data.get("gemini_model", "gemini-1.5-flash"),
+            "gemini_key_set": bool(data.get("gemini_api_key")),
+            "gemini_key_hint": _masked("gemini_api_key"),
+            "claude_model":  data.get("claude_model", "claude-haiku-4-5-20251001"),
+            "claude_key_set": bool(data.get("claude_api_key")),
+            "claude_key_hint": _masked("claude_api_key"),
+            "prompt_scene":  data.get("prompt_scene", ""),
+            "prompt_qris":   data.get("prompt_qris", ""),
+        })
+
+    def _handle_ai_settings_save(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body   = json.loads(self.rfile.read(length)) if length else {}
+            from config import cfg
+
+            # Only accept known AI-settings keys
+            allowed = {
+                "ai_provider", "ai_timeout_s",
+                "openai_api_key", "openai_model",
+                "gemini_api_key", "gemini_model",
+                "claude_api_key", "claude_model",
+                "prompt_scene",   "prompt_qris",
+            }
+            payload = {k: v for k, v in body.items() if k in allowed}
+            # Ignore empty strings for secret keys (UI sends "" when unchanged)
+            for key in ("openai_api_key", "gemini_api_key", "claude_api_key"):
+                if payload.get(key) == "" or payload.get(key) == "****":
+                    payload.pop(key, None)
+
+            cfg.update(payload)
+            self.logger.info(
+                f"AI settings saved: {[k for k in payload if 'key' not in k]}"
+            )
+            self._send_json({"ok": True, "applied": list(payload.keys())})
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
+
+    def _handle_ai_settings_test(self):
+        try:
+            from config import cfg
+            from adapters import get_adapter
+            adapter = get_adapter(cfg.AI_PROVIDER, cfg)
+            result  = adapter.test_connection()
+            self._send_json(result)
+        except ValueError as e:
+            self._send_json({"ok": False, "message": str(e)}, 400)
+        except Exception as e:
+            self._send_json({"ok": False, "message": str(e)}, 500)
 
     # ─── Helpers ───────────────────────────────────────────────────────────────
 

@@ -21,6 +21,7 @@ except ImportError:
 
 from config import cfg, RELEVANT_LABELS, COCO_LABEL_MAP
 from utils.logger import position_from_bbox
+from adapters import get_adapter, AdapterError
 
 
 class AIEngine:
@@ -209,107 +210,66 @@ class AIEngine:
 
     # ─── Cloud triggers ───────────────────────────────────────────────────────
 
-    def trigger_scene_description(self):
-        """Capture last frame → OpenAI Vision → queue audio description."""
-        if not cfg.OPENAI_API_KEY:
-            self.logger.warn("OPENAI_API_KEY not set", module="AIEngine")
-            self.orch.audio_manager.queue_system("api_tidak_tersedia")
-            return
+    def _get_adapter(self):
+        """Return an adapter instance for the configured ai_provider."""
+        return get_adapter(cfg.AI_PROVIDER, cfg)
 
+    def _frame_jpeg(self) -> bytes:
+        """Return last-frame JPEG bytes, or empty bytes if unavailable."""
+        if self._last_frame is None:
+            return b""
+        try:
+            return bytes(self._last_frame.to_jpeg().to_bytes())
+        except Exception:
+            return b""
+
+    def trigger_scene_description(self):
+        """Capture last frame → AI Vision adapter → queue audio description."""
         frame = self._last_frame
         if frame is None:
             self.logger.warn("No frame available for scene description",
                              module="AIEngine")
             return
 
-        self.logger.info("Sending frame to OpenAI Vision", module="AIEngine")
+        self.logger.info(
+            f"Sending frame to {cfg.AI_PROVIDER} (scene)", module="AIEngine"
+        )
         self.orch.audio_manager.queue_system("sedang_menganalisis")
 
         try:
-            import urllib.request, json as _json
-
-            b64 = base64.b64encode(bytes(frame.to_jpeg().to_bytes())).decode()
-            payload = {
-                "model": cfg.OPENAI_MODEL,
-                "messages": [{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": cfg.PROMPT_SCENE},
-                        {"type": "image_url",
-                         "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                    ],
-                }],
-                "max_tokens": 150,
-            }
-            req = urllib.request.Request(
-                "https://api.openai.com/v1/chat/completions",
-                data=_json.dumps(payload).encode(),
-                headers={
-                    "Content-Type":  "application/json",
-                    "Authorization": f"Bearer {cfg.OPENAI_API_KEY}",
-                },
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=cfg.OPENAI_TIMEOUT_S) as resp:
-                data = _json.loads(resp.read())
-            description = data["choices"][0]["message"]["content"].strip()
-
+            adapter = self._get_adapter()
+            description = adapter.describe_scene(self._frame_jpeg(), cfg.PROMPT_SCENE)
             self.logger.ok(f"Scene: {description}", module="AIEngine")
             self.orch.audio_manager.queue_info(description)
-
+        except AdapterError as e:
+            self.logger.error(f"AI adapter error: {e}", module="AIEngine")
+            self.orch.audio_manager.queue_system("gagal_menganalisis")
         except Exception as e:
-            self.logger.error(f"OpenAI API error: {e}", module="AIEngine")
+            self.logger.error(f"Unexpected adapter error: {e}", module="AIEngine")
             self.orch.audio_manager.queue_system("gagal_menganalisis")
 
     def trigger_qris_scan(self):
-        """Capture last frame → OpenAI Vision → parse QRIS result."""
-        if not cfg.OPENAI_API_KEY:
-            self.logger.warn("OPENAI_API_KEY not set", module="AIEngine")
-            self.orch.audio_manager.queue_system("api_tidak_tersedia")
-            return
-
+        """Capture last frame → AI Vision adapter → parse QRIS result."""
         frame = self._last_frame
         if frame is None:
             return
 
-        self.logger.info("Scanning QRIS", module="AIEngine")
+        self.logger.info(
+            f"Sending frame to {cfg.AI_PROVIDER} (QRIS)", module="AIEngine"
+        )
         self.orch.audio_manager.queue_system("memindai_kode_pembayaran")
 
         try:
-            import urllib.request, json as _json
-
-            b64 = base64.b64encode(bytes(frame.to_jpeg().to_bytes())).decode()
-            payload = {
-                "model": cfg.OPENAI_MODEL,
-                "messages": [{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": cfg.PROMPT_QRIS},
-                        {"type": "image_url",
-                         "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                    ],
-                }],
-                "max_tokens": 80,
-            }
-            req = urllib.request.Request(
-                "https://api.openai.com/v1/chat/completions",
-                data=_json.dumps(payload).encode(),
-                headers={
-                    "Content-Type":  "application/json",
-                    "Authorization": f"Bearer {cfg.OPENAI_API_KEY}",
-                },
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=cfg.OPENAI_TIMEOUT_S) as resp:
-                data = _json.loads(resp.read())
-            result = data["choices"][0]["message"]["content"].strip()
-
+            adapter = self._get_adapter()
+            result = adapter.scan_qris(self._frame_jpeg(), cfg.PROMPT_QRIS)
             self.logger.ok(f"QRIS: {result}", module="AIEngine")
             self.orch.audio_manager.queue_info(result)
             self._save_qris_log(result)
-
+        except AdapterError as e:
+            self.logger.error(f"AI adapter error: {e}", module="AIEngine")
+            self.orch.audio_manager.queue_system("gagal_memindai")
         except Exception as e:
-            self.logger.error(f"QRIS scan error: {e}", module="AIEngine")
+            self.logger.error(f"Unexpected adapter error: {e}", module="AIEngine")
             self.orch.audio_manager.queue_system("gagal_memindai")
 
     def _save_qris_log(self, result: str):
