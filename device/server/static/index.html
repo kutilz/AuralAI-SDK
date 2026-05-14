@@ -507,9 +507,21 @@
         <button class="bench-close" onclick="closeAISettings()">✕</button>
       </div>
 
-      <!-- Body -->
-      <div style="padding:16px 20px;overflow-y:auto;max-height:70vh;">
+      <!-- Tab navigation -->
+      <div class="bench-tabs" style="border-top:1px solid var(--border);">
+        <button class="bench-tab active" id="aiTabAI"       onclick="switchAITab('ai')">
+          <span class="bench-tab-icon">🤖</span> AI Vision
+        </button>
+        <button class="bench-tab"        id="aiTabHardware" onclick="switchAITab('hardware')">
+          <span class="bench-tab-icon">⚙</span> Hardware
+        </button>
+      </div>
 
+      <!-- Body -->
+      <div style="padding:16px 20px;overflow-y:auto;max-height:65vh;">
+
+      <!-- ── TAB: AI Vision ─────────────────────── -->
+      <div id="aiPanelAI">
         <!-- Provider selector -->
         <div class="ai-set-row">
           <label class="ai-set-label">Provider Aktif</label>
@@ -593,6 +605,44 @@
           <label class="ai-set-label">Scan QRIS</label>
           <textarea class="ai-set-textarea" id="promptQris" rows="3"></textarea>
         </div>
+
+      </div><!-- end #aiPanelAI -->
+
+      <!-- ── TAB: Hardware ──────────────────────── -->
+      <div id="aiPanelHardware" style="display:none;">
+        <div class="ai-sec-title">Deteksi</div>
+
+        <div class="ai-set-row">
+          <label class="ai-set-label">Confidence Threshold</label>
+          <input class="ai-set-input ai-set-input-sm" type="number" id="hwConfThreshold"
+                 min="0.1" max="0.9" step="0.05" value="0.5" />
+          <span style="color:var(--text3);font-size:11px;">0.1 – 0.9</span>
+        </div>
+        <div class="ai-set-row" style="margin-bottom:4px;">
+          <label class="ai-set-label"></label>
+          <input type="range" id="hwConfSlider" min="0.1" max="0.9" step="0.05" value="0.5"
+                 style="flex:1;accent-color:var(--accent);"
+                 oninput="document.getElementById('hwConfThreshold').value=parseFloat(this.value).toFixed(2)" />
+        </div>
+        <div class="ai-set-row" style="color:var(--text3);font-size:10px;margin-bottom:16px;">
+          <label class="ai-set-label"></label>
+          <span>Turunkan ke 0.35 di keramaian agar lebih sensitif; naikkan ke 0.7 di tempat sepi untuk kurangi false positive.</span>
+        </div>
+
+        <div class="ai-sec-title">Audio</div>
+        <div class="ai-set-row">
+          <label class="ai-set-label">Volume Speaker</label>
+          <input class="ai-set-input ai-set-input-sm" type="number" id="hwVolume"
+                 min="0" max="100" step="5" value="80" />
+          <span style="color:var(--text3);font-size:11px;">0 – 100</span>
+        </div>
+        <div class="ai-set-row">
+          <label class="ai-set-label"></label>
+          <input type="range" id="hwVolumeSlider" min="0" max="100" step="5" value="80"
+                 style="flex:1;accent-color:var(--accent);"
+                 oninput="document.getElementById('hwVolume').value=this.value" />
+        </div>
+      </div><!-- end #aiPanelHardware -->
 
         <!-- Footer buttons -->
         <div class="ai-set-footer">

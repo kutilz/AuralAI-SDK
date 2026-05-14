@@ -56,6 +56,8 @@ _DEFAULTS: dict = {
     "watchdog_timeout_s":       5.0,
     # GPIO pin number for hardware mode-cycle button; -1 = disabled
     "button_pin_mode":          -1,
+    # Speaker volume (0-100); read by AudioManager on every play
+    "audio_volume":             80,
 }
 
 
@@ -234,6 +236,10 @@ class Config:
     @property
     def BUTTON_PIN_MODE(self) -> int:
         return self.get("button_pin_mode")
+
+    @property
+    def AUDIO_VOLUME(self) -> int:
+        return int(self.get("audio_volume", 80))
 
     @property
     def PROMPT_SCENE(self) -> str:

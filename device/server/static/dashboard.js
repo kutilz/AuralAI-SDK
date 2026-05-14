@@ -12,8 +12,8 @@ const LOG_INTERVAL      = 4000;  // ms antar device log fetch
 const HEALTH_INTERVAL   = 3000;  // ms antar health poll
 const BENCH_POLL_MS     = 700;   // ms antar benchmark status poll
 const STRESS_POLL_MS    = 5000;  // ms antar stress status poll
-const CAM_W             = 320;
-const CAM_H             = 224;
+let CAM_W               = 320;
+let CAM_H               = 224;
 
 // ── State ──────────────────────────────────────────────────────────────────────
 const state = {
@@ -106,7 +106,7 @@ function renderOverlay() {
   ctx.globalAlpha = 0.20;
   ctx.fillStyle   = '#fff';
   ctx.font        = '9px monospace';
-  ctx.fillText('320×224', 5, CAM_H - 5);
+  ctx.fillText(`${CAM_W}×${CAM_H}`, 5, CAM_H - 5);
   ctx.globalAlpha = 1;
 }
 
@@ -224,6 +224,14 @@ async function pollStatus() {
     if (data.audio_text && data.audio_text !== state._lastAudioText) {
       state._lastAudioText = data.audio_text;
       showAudioText(data.audio_text);
+    }
+
+    // Camera dimensions — resize canvas when config changes
+    const w = data.cam_w, h = data.cam_h;
+    if (w && h && (w !== CAM_W || h !== CAM_H)) {
+      CAM_W = w; CAM_H = h;
+      if (canvas) { canvas.width = CAM_W; canvas.height = CAM_H; }
+      document.getElementById('resLabel').textContent = `${CAM_W}×${CAM_H}`;
     }
 
   } catch {
@@ -997,10 +1005,20 @@ document.addEventListener('DOMContentLoaded', () => {
 // ══════════════════════════════════════════════════════════════════════════════
 
 let _aiCurrentProvider = 'openai';
+let _aiCurrentTab      = 'ai';
 
 function openAISettings() {
   document.getElementById('aiSettingsOverlay').classList.add('open');
+  switchAITab(_aiCurrentTab);
   aiSettingsLoad();
+}
+
+function switchAITab(tab) {
+  _aiCurrentTab = tab;
+  document.getElementById('aiPanelAI').style.display       = tab === 'ai'       ? '' : 'none';
+  document.getElementById('aiPanelHardware').style.display = tab === 'hardware' ? '' : 'none';
+  document.getElementById('aiTabAI').classList.toggle('active',       tab === 'ai');
+  document.getElementById('aiTabHardware').classList.toggle('active', tab === 'hardware');
 }
 
 function closeAISettings(e) {
@@ -1020,9 +1038,14 @@ function selectProvider(p) {
 
 async function aiSettingsLoad() {
   try {
-    const r = await fetch('/ai-settings');
-    const d = await r.json();
+    const [rAI, rCfg] = await Promise.all([
+      fetch('/ai-settings'),
+      fetch('/config'),
+    ]);
+    const d   = await rAI.json();
+    const cfg = rCfg.ok ? await rCfg.json() : {};
 
+    // AI Vision tab
     selectProvider(d.ai_provider || 'openai');
     document.getElementById('aiTimeout').value     = d.ai_timeout_s  ?? 15;
     document.getElementById('openaiModel').value   = d.openai_model  || 'gpt-4o-mini';
@@ -1033,17 +1056,33 @@ async function aiSettingsLoad() {
     document.getElementById('claudeKeyHint').textContent = d.claude_key_hint || '';
     document.getElementById('promptScene').value   = d.prompt_scene  || '';
     document.getElementById('promptQris').value    = d.prompt_qris   || '';
-    // Clear key inputs (server never returns the actual key)
     ['openaiKey','geminiKey','claudeKey'].forEach(id =>
       document.getElementById(id).value = ''
     );
+
+    // Hardware tab
+    const conf = cfg.conf_threshold ?? 0.5;
+    const vol  = cfg.audio_volume   ?? 80;
+    document.getElementById('hwConfThreshold').value = parseFloat(conf).toFixed(2);
+    document.getElementById('hwConfSlider').value    = conf;
+    document.getElementById('hwVolume').value        = vol;
+    document.getElementById('hwVolumeSlider').value  = vol;
+
+    // Keep number inputs and sliders in sync when user types
+    document.getElementById('hwConfThreshold').oninput = function() {
+      document.getElementById('hwConfSlider').value = this.value;
+    };
+    document.getElementById('hwVolume').oninput = function() {
+      document.getElementById('hwVolumeSlider').value = this.value;
+    };
   } catch(e) {
     log('err', `Gagal load AI settings: ${e}`);
   }
 }
 
 async function aiSettingsSave() {
-  const payload = {
+  // AI Vision payload
+  const aiPayload = {
     ai_provider:    _aiCurrentProvider,
     ai_timeout_s:   parseInt(document.getElementById('aiTimeout').value) || 15,
     openai_model:   document.getElementById('openaiModel').value,
@@ -1052,26 +1091,38 @@ async function aiSettingsSave() {
     prompt_scene:   document.getElementById('promptScene').value.trim(),
     prompt_qris:    document.getElementById('promptQris').value.trim(),
   };
-  // Only send keys if user typed something
   const oKey = document.getElementById('openaiKey').value.trim();
   const gKey = document.getElementById('geminiKey').value.trim();
   const cKey = document.getElementById('claudeKey').value.trim();
-  if (oKey) payload.openai_api_key = oKey;
-  if (gKey) payload.gemini_api_key = gKey;
-  if (cKey) payload.claude_api_key = cKey;
+  if (oKey) aiPayload.openai_api_key = oKey;
+  if (gKey) aiPayload.gemini_api_key = gKey;
+  if (cKey) aiPayload.claude_api_key = cKey;
+
+  // Hardware payload (sent via POST /config)
+  const hwPayload = {
+    conf_threshold: parseFloat(document.getElementById('hwConfThreshold').value) || 0.5,
+    audio_volume:   parseInt(document.getElementById('hwVolume').value)           || 80,
+  };
 
   try {
-    const r = await fetch('/ai-settings', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify(payload),
-    });
-    const d = await r.json();
-    if (d.ok) {
-      log('ok', `AI settings disimpan (provider: ${payload.ai_provider})`);
+    const [rAI, rHW] = await Promise.all([
+      fetch('/ai-settings', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(aiPayload),
+      }),
+      fetch('/config', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(hwPayload),
+      }),
+    ]);
+    const dAI = await rAI.json();
+    if (dAI.ok) {
+      log('ok', `Settings disimpan — provider: ${aiPayload.ai_provider}, conf: ${hwPayload.conf_threshold}, vol: ${hwPayload.audio_volume}`);
       closeAISettings();
     } else {
-      log('err', `Gagal simpan: ${d.error}`);
+      log('err', `Gagal simpan AI settings: ${dAI.error}`);
     }
   } catch(e) {
     log('err', `Save error: ${e}`);

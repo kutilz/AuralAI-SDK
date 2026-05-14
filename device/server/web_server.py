@@ -273,8 +273,12 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             self._serve_collect_gallery()
         elif path.startswith("/collect/photo/"):
             self._serve_collect_photo(path[len("/collect/photo/"):])
+        elif path == "/collect/download":
+            self._serve_collect_download()
         elif path == "/ai-settings":
             self._serve_ai_settings()
+        elif path == "/config":
+            self._serve_config()
         else:
             self._send_404()
 
@@ -311,6 +315,8 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             self._handle_collect_start()
         elif path == "/collect/stop":
             self._handle_collect_stop()
+        elif path == "/collect/delete":
+            self._handle_collect_delete()
         elif path == "/ai-settings":
             self._handle_ai_settings_save()
         elif path == "/ai-settings/test":
@@ -517,6 +523,47 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": ok, "message": msg})
         except Exception as e:
             self._send_json({"error": str(e)}, 500)
+
+    def _handle_collect_delete(self):
+        if self.dc is None:
+            self._send_json({"error": "data collector not available"}, 503)
+            return
+        try:
+            length   = int(self.headers.get("Content-Length", 0))
+            data     = json.loads(self.rfile.read(length)) if length else {}
+            filename = data.get("filename", "")
+            ok, msg  = self.dc.delete_photo(filename)
+            self._send_json({"ok": ok, "message": msg})
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
+
+    def _serve_collect_download(self):
+        if self.dc is None:
+            self._send_json({"error": "data collector not available"}, 503)
+            return
+        zip_path, err = self.dc.create_session_zip()
+        if err or not zip_path:
+            self._send_json({"error": err or "zip gagal"}, 500)
+            return
+        try:
+            with open(zip_path, "rb") as f:
+                data = f.read()
+            import os as _os
+            basename = _os.path.basename(zip_path)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Length", len(data))
+            self.send_header("Content-Disposition",
+                             f'attachment; filename="{basename}"')
+            self._set_cors_headers()
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
+
+    def _serve_config(self):
+        from config import cfg
+        self._send_json(cfg.as_dict())
 
     # ─── AI Settings endpoints ─────────────────────────────────────────────────
 

@@ -218,7 +218,11 @@ class AudioManager:
                 pcm_data = f.read()
 
             player = maix_audio.Player()
-            player.volume(80)
+            try:
+                from config import cfg as _cfg
+                player.volume(_cfg.AUDIO_VOLUME)
+            except Exception:
+                player.volume(80)
             player.play(bytes(pcm_data))   # non-blocking start
 
             duration_s = len(pcm_data) / _PCM_BYTES_S + 0.15

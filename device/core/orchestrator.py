@@ -163,6 +163,8 @@ class Orchestrator:
                 "detections":  list(self._detections),
                 "latency":     dict(self._latency),
                 "audio_text":  audio_text,
+                "cam_w":       cfg.get("input_width",  320),
+                "cam_h":       cfg.get("input_height", 224),
             }
 
     # ─── Mode switching ───────────────────────────────────────────────────────
