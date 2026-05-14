@@ -132,9 +132,88 @@ class StressRunner:
             }
 
 
+# ─── Benchmark Suite Runner ────────────────────────────────────────────────────
+
+class BenchmarkSuiteRunner:
+    """
+    Runs the standardized 4-test benchmark suite as a subprocess.
+    Results are readable from /tmp/bench_suite_progress.json while running,
+    and from /root/logs/safety_index_report.json when done.
+    """
+    PROGRESS_FILE = "/tmp/bench_suite_progress.json"
+    REPORT_FILE   = "/root/logs/safety_index_report.json"
+
+    def __init__(self):
+        self._proc = None
+        self._lock = threading.Lock()
+
+    def start(self, tests="T1,T2,T3,T4", t1_frames=100, t4_duration=600):
+        with self._lock:
+            if self._proc and self._proc.poll() is None:
+                return False, "Already running"
+            try:
+                script = os.path.join(_DEVICE_DIR, "benchmark", "run_all.py")
+                args   = [
+                    sys.executable, script,
+                    "--tests",       tests,
+                    "--t1-frames",   str(t1_frames),
+                    "--t4-duration", str(t4_duration),
+                ]
+                self._proc = subprocess.Popen(
+                    args,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    cwd=_DEVICE_DIR,
+                )
+                return True, f"Suite started (PID {self._proc.pid})"
+            except Exception as e:
+                return False, str(e)
+
+    def report_only(self):
+        with self._lock:
+            if self._proc and self._proc.poll() is None:
+                return False, "Suite running — wait for it to finish"
+            try:
+                script = os.path.join(_DEVICE_DIR, "benchmark", "run_all.py")
+                subprocess.Popen(
+                    [sys.executable, script, "--report-only"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    cwd=_DEVICE_DIR,
+                )
+                return True, "Report compilation started"
+            except Exception as e:
+                return False, str(e)
+
+    def stop(self):
+        with self._lock:
+            if self._proc and self._proc.poll() is None:
+                self._proc.terminate()
+                return True, "Stopped"
+        return False, "Not running"
+
+    def progress(self):
+        running = self._proc is not None and self._proc.poll() is None
+        try:
+            with open(self.PROGRESS_FILE) as f:
+                data = json.load(f)
+            data["proc_running"] = running
+            return data
+        except Exception:
+            return {"running": running, "step": "idle", "pct": 0, "results": {}}
+
+    def report(self):
+        try:
+            with open(self.REPORT_FILE) as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+
 # ─── Module-level singletons ───────────────────────────────────────────────────
 _benchmark = BenchmarkRunner()
 _stress    = StressRunner()
+_suite     = BenchmarkSuiteRunner()
 
 
 # ─── Request Handler ───────────────────────────────────────────────────────────
@@ -176,6 +255,15 @@ class AuralAIHandler(BaseHTTPRequestHandler):
         # ── Stress endpoints ───────────────────────────────────────────────────
         elif path == "/stress/status":
             self._send_json(_stress.status())
+        # ── Benchmark Suite endpoints ──────────────────────────────────────────
+        elif path == "/suite/progress":
+            self._send_json(_suite.progress())
+        elif path == "/suite/report":
+            r = _suite.report()
+            if r:
+                self._send_json(r)
+            else:
+                self._send_json({"error": "Report not available — run suite first"}, 404)
         # ── Data Collection endpoints ──────────────────────────────────────────
         elif path == "/collect" or path == "/collect/":
             self._serve_file("collect.html", "text/html")
@@ -185,6 +273,12 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             self._serve_collect_gallery()
         elif path.startswith("/collect/photo/"):
             self._serve_collect_photo(path[len("/collect/photo/"):])
+        elif path == "/collect/download":
+            self._serve_collect_download()
+        elif path == "/ai-settings":
+            self._serve_ai_settings()
+        elif path == "/config":
+            self._serve_config()
         else:
             self._send_404()
 
@@ -207,11 +301,26 @@ class AuralAIHandler(BaseHTTPRequestHandler):
         elif path == "/stress/stop":
             ok, msg = _stress.stop()
             self._send_json({"ok": ok, "message": msg})
+        # ── Benchmark Suite ───────────────────────────────────────────────
+        elif path == "/suite/start":
+            self._handle_suite_start()
+        elif path == "/suite/stop":
+            ok, msg = _suite.stop()
+            self._send_json({"ok": ok, "message": msg})
+        elif path == "/suite/report-only":
+            ok, msg = _suite.report_only()
+            self._send_json({"ok": ok, "message": msg})
         # ── Data Collection ───────────────────────────────────────────────────
         elif path == "/collect/start":
             self._handle_collect_start()
         elif path == "/collect/stop":
             self._handle_collect_stop()
+        elif path == "/collect/delete":
+            self._handle_collect_delete()
+        elif path == "/ai-settings":
+            self._handle_ai_settings_save()
+        elif path == "/ai-settings/test":
+            self._handle_ai_settings_test()
         else:
             self._send_404()
 
@@ -255,11 +364,7 @@ class AuralAIHandler(BaseHTTPRequestHandler):
         self.wfile.write(snap)
 
     def _serve_status(self):
-        status = self.orch.get_status()
-        audio  = self.orch.pop_audio()
-        if audio:
-            status["audio_text"] = audio
-        self._send_json(status)
+        self._send_json(self.orch.get_status())
 
     def _serve_logs(self):
         logs = self.orch.logger.get_recent(50)
@@ -314,10 +419,27 @@ class AuralAIHandler(BaseHTTPRequestHandler):
     def _handle_config(self):
         try:
             length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(length)
-            data = json.loads(body)
-            self.logger.info(f"Config update: {data}")
-            self._send_json({"ok": True})
+            body   = self.rfile.read(length)
+            data   = json.loads(body)
+            from config import cfg
+            cfg.update(data)
+            self.logger.info(f"Config updated: {list(data.keys())}")
+            self._send_json({"ok": True, "applied": list(data.keys())})
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
+
+    # ─── Benchmark Suite endpoints ─────────────────────────────────────────────
+
+    def _handle_suite_start(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            data   = json.loads(self.rfile.read(length)) if length else {}
+            tests      = data.get("tests",       "T1,T2,T3,T4")
+            t1_frames  = int(data.get("t1_frames",  100))
+            t4_duration = float(data.get("t4_duration", 600))
+            ok, msg = _suite.start(tests=tests, t1_frames=t1_frames,
+                                   t4_duration=t4_duration)
+            self._send_json({"ok": ok, "message": msg})
         except Exception as e:
             self._send_json({"error": str(e)}, 500)
 
@@ -401,6 +523,115 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": ok, "message": msg})
         except Exception as e:
             self._send_json({"error": str(e)}, 500)
+
+    def _handle_collect_delete(self):
+        if self.dc is None:
+            self._send_json({"error": "data collector not available"}, 503)
+            return
+        try:
+            length   = int(self.headers.get("Content-Length", 0))
+            data     = json.loads(self.rfile.read(length)) if length else {}
+            filename = data.get("filename", "")
+            ok, msg  = self.dc.delete_photo(filename)
+            self._send_json({"ok": ok, "message": msg})
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
+
+    def _serve_collect_download(self):
+        if self.dc is None:
+            self._send_json({"error": "data collector not available"}, 503)
+            return
+        zip_path, err = self.dc.create_session_zip()
+        if err or not zip_path:
+            self._send_json({"error": err or "zip gagal"}, 500)
+            return
+        try:
+            with open(zip_path, "rb") as f:
+                data = f.read()
+            import os as _os
+            basename = _os.path.basename(zip_path)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Length", len(data))
+            self.send_header("Content-Disposition",
+                             f'attachment; filename="{basename}"')
+            self._set_cors_headers()
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
+
+    def _serve_config(self):
+        from config import cfg
+        self._send_json(cfg.as_dict())
+
+    # ─── AI Settings endpoints ─────────────────────────────────────────────────
+
+    def _serve_ai_settings(self):
+        from config import cfg
+        data = cfg.as_dict()
+        # Mask secrets — send only whether a key is set, not the value
+        def _masked(key: str) -> str:
+            v = data.get(key, "")
+            if not v:
+                return ""
+            return "***" + v[-4:] if len(v) > 4 else "****"
+
+        self._send_json({
+            "ai_provider":   data.get("ai_provider", "openai"),
+            "ai_timeout_s":  data.get("ai_timeout_s", 15),
+            "openai_model":  data.get("openai_model", "gpt-4o-mini"),
+            "openai_key_set": bool(data.get("openai_api_key")),
+            "openai_key_hint": _masked("openai_api_key"),
+            "gemini_model":  data.get("gemini_model", "gemini-1.5-flash"),
+            "gemini_key_set": bool(data.get("gemini_api_key")),
+            "gemini_key_hint": _masked("gemini_api_key"),
+            "claude_model":  data.get("claude_model", "claude-haiku-4-5-20251001"),
+            "claude_key_set": bool(data.get("claude_api_key")),
+            "claude_key_hint": _masked("claude_api_key"),
+            "prompt_scene":  data.get("prompt_scene", ""),
+            "prompt_qris":   data.get("prompt_qris", ""),
+        })
+
+    def _handle_ai_settings_save(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body   = json.loads(self.rfile.read(length)) if length else {}
+            from config import cfg
+
+            # Only accept known AI-settings keys
+            allowed = {
+                "ai_provider", "ai_timeout_s",
+                "openai_api_key", "openai_model",
+                "gemini_api_key", "gemini_model",
+                "claude_api_key", "claude_model",
+                "prompt_scene",   "prompt_qris",
+            }
+            payload = {k: v for k, v in body.items() if k in allowed}
+            # Ignore empty strings for secret keys (UI sends "" when unchanged)
+            for key in ("openai_api_key", "gemini_api_key", "claude_api_key"):
+                if payload.get(key) == "" or payload.get(key) == "****":
+                    payload.pop(key, None)
+
+            cfg.update(payload)
+            self.logger.info(
+                f"AI settings saved: {[k for k in payload if 'key' not in k]}"
+            )
+            self._send_json({"ok": True, "applied": list(payload.keys())})
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
+
+    def _handle_ai_settings_test(self):
+        try:
+            from config import cfg
+            from adapters import get_adapter
+            adapter = get_adapter(cfg.AI_PROVIDER, cfg)
+            result  = adapter.test_connection()
+            self._send_json(result)
+        except ValueError as e:
+            self._send_json({"ok": False, "message": str(e)}, 400)
+        except Exception as e:
+            self._send_json({"ok": False, "message": str(e)}, 500)
 
     # ─── Helpers ───────────────────────────────────────────────────────────────
 

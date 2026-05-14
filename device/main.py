@@ -1,76 +1,98 @@
 """
 AuralAI SDK — Entry Point
-Dijalankan di MaixCAM via MaixVision atau: python main.py
+Run on MaixCAM via MaixVision or: python main.py
 
-Memulai dua thread utama:
-  1. AI Loop  — camera → inference → result queue
-  2. Web Server — HTTP + snapshot endpoint
-
-Alternatif stack MVP (MaixCAM + companion PC + OpenAI): jalankan `aural_maix.py`
-dan ikuti docs/setup.md bagian «Companion PC».
+Threads:
+  AILoop        — camera → NPU inference → audio queue
+  WebServer     — HTTP dashboard + API
+  Watchdog      — module health monitor (restarts crashed components)
+  HealthMonitor — hardware telemetry + thermal throttle
+  BtnListener   — GPIO mode-cycle button (if configured)
 """
 
-import threading
-import time
 import sys
 import os
+import threading
+import time
 
-# Tambah parent dir ke path agar import relatif bisa dipakai
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from config import WEB_HOST, WEB_PORT
+from config import cfg
 from core.orchestrator import Orchestrator
+from core.watchdog import Watchdog
 from server.web_server import WebServer
 from utils.logger import Logger
+from utils.health import HealthMonitor
 from modes.data_collection_mode import DataCollector
 
 
 def main():
-    logger = Logger()
-    logger.info("=" * 50)
-    logger.info("AuralAI SDK — Starting up")
-    logger.info("=" * 50)
+    # ── Logger ────────────────────────────────────────────────────────────────
+    logger = Logger(
+        log_path=cfg.LOG_PATH,
+        max_lines=cfg.LOG_MAX_LINES,
+    )
+    logger.info("=" * 50, module="Main")
+    logger.info("AuralAI SDK — Starting up", module="Main")
+    logger.info("=" * 50, module="Main")
 
-    # Shared state antara thread AI dan Web Server
+    # ── Orchestrator ──────────────────────────────────────────────────────────
     orchestrator = Orchestrator(logger=logger)
 
-    # Data collector (mode pengambilan dataset)
+    # ── Watchdog ──────────────────────────────────────────────────────────────
+    watchdog = Watchdog(check_interval_s=1.0)
+    orchestrator.watchdog = watchdog
+    watchdog.start()
+    logger.ok("Watchdog started", module="Main")
+
+    # ── Health Monitor ────────────────────────────────────────────────────────
+    health = HealthMonitor(
+        throttle_temp_c=cfg.THERMAL_THROTTLE_TEMP_C,
+        poll_interval_s=5.0,
+    )
+    health.start(
+        on_throttle=orchestrator._on_thermal_throttle,
+        on_recover=orchestrator._on_thermal_recover,
+    )
+    logger.ok("HealthMonitor started", module="Main")
+
+    # ── Data Collector ────────────────────────────────────────────────────────
     data_collector = DataCollector(logger=logger)
 
-    # Thread 2: Web Server (selalu jalan)
+    # ── Web Server ────────────────────────────────────────────────────────────
     web_server = WebServer(
-        host=WEB_HOST,
-        port=WEB_PORT,
+        host=cfg.WEB_HOST,
+        port=cfg.WEB_PORT,
         orchestrator=orchestrator,
         logger=logger,
         data_collector=data_collector,
     )
-    web_thread = threading.Thread(
+    threading.Thread(
         target=web_server.start,
         daemon=True,
         name="WebServer",
-    )
-    web_thread.start()
-    logger.info(f"Web server started → http://{WEB_HOST}:{WEB_PORT}")
+    ).start()
+    logger.info(f"Web server → http://{cfg.WEB_HOST}:{cfg.WEB_PORT}", module="Main")
 
-    # Thread 1: AI Loop
-    ai_thread = threading.Thread(
+    # ── AI Loop ───────────────────────────────────────────────────────────────
+    threading.Thread(
         target=orchestrator.run_ai_loop,
         daemon=True,
         name="AILoop",
-    )
-    ai_thread.start()
-    logger.info("AI loop started")
+    ).start()
+    logger.ok("AI loop started", module="Main")
+    logger.info("All threads running. Press Ctrl+C to stop.", module="Main")
 
-    logger.info("All threads running. Press Ctrl+C to stop.")
-
+    # ── Main thread: keep alive, handle shutdown ───────────────────────────────
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        logger.info("Shutdown requested — stopping...")
+        logger.info("Shutdown requested", module="Main")
         orchestrator.stop()
-        logger.info("AuralAI SDK stopped.")
+        watchdog.stop()
+        health.stop()
+        logger.info("AuralAI SDK stopped.", module="Main")
 
 
 if __name__ == "__main__":

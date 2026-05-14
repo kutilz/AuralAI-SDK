@@ -1,178 +1,259 @@
 """
-Audio Manager — Mengelola queue audio dan playback di MaixCAM.
-Audio source (WAV/MP3/dll) dikonversi ke PCM s16le 48kHz mono via FFmpeg
-sebelum diputar. File PCM di-cache di sebelah source agar konversi hanya
-dilakukan sekali. Fallback ke Web UI jika file tidak tersedia.
+Audio Manager — Non-blocking priority queue playback.
+
+Priority levels (lower number = higher priority):
+  CRITICAL (0) — close-range obstacle / emergency
+  HIGH     (1) — important detection
+  NORMAL   (2) — regular detection / system event
+  LOW      (3) — informational / scene description
+
+A newly queued task at a higher priority than what is currently
+playing will interrupt playback immediately.
 """
 
 import os
 import time
+import queue
 import threading
 from collections import defaultdict
-from config import AUDIO_DIR, AUDIO_COOLDOWN_S
+from typing import Optional
 
-# PCM constants (sesuai standar MaixCAM audio.Player default)
-_PCM_RATE    = 48000  # Hz
-_PCM_BYTES_S = _PCM_RATE * 2  # s16le mono = 2 bytes/sample
+CRITICAL = 0
+HIGH     = 1
+NORMAL   = 2
+LOW      = 3
+
+_PCM_RATE    = 48000
+_PCM_BYTES_S = _PCM_RATE * 2   # s16le mono = 2 bytes/sample
+
+# Monotonically increasing counter for stable ordering within same priority
+_SEQ      = 0
+_SEQ_LOCK = threading.Lock()
+
+
+def _next_seq() -> int:
+    global _SEQ
+    with _SEQ_LOCK:
+        _SEQ += 1
+        return _SEQ
+
+
+class _Task:
+    __slots__ = ("text", "wav_path", "priority", "label", "seq")
+
+    def __init__(self, text: str, wav_path: Optional[str],
+                 priority: int, label: str):
+        self.text     = text
+        self.wav_path = wav_path
+        self.priority = priority
+        self.label    = label
+        self.seq      = _next_seq()
+
+    def __lt__(self, other: "_Task") -> bool:
+        if self.priority != other.priority:
+            return self.priority < other.priority
+        return self.seq < other.seq
 
 
 class AudioManager:
+
     def __init__(self, orchestrator, logger):
-        self.orch = orchestrator
+        self.orch   = orchestrator
         self.logger = logger
-        self._lock = threading.Lock()
-        self._last_played = defaultdict(float)  # label → last play time
-        self._playing = False
-        self._thread = threading.Thread(target=self._loop, daemon=True, name="AudioMgr")
+
+        # Resolved at construction so they can't change mid-run unexpectedly
+        try:
+            from config import cfg as _cfg
+            self._audio_dir  = _cfg.AUDIO_DIR
+            self._cooldown_s = _cfg.AUDIO_COOLDOWN_S
+        except Exception:
+            self._audio_dir  = "/root/audio"
+            self._cooldown_s = 2.0
+
+        self._pq: queue.PriorityQueue = queue.PriorityQueue()
+
+        # label → monotonic timestamp of last play
+        self._cooldown_map: dict = defaultdict(float)
+        self._cd_lock = threading.Lock()
+
+        # Tracks priority of whatever is playing right now
+        self._current_priority = LOW
+        # Text currently being played (exposed to status endpoint)
+        self._current_text: str = ""
+        self._text_lock = threading.Lock()
+        # Set to interrupt ongoing playback sleep loop
+        self._interrupt = threading.Event()
+        self._stop      = threading.Event()
+
+        self._thread = threading.Thread(
+            target=self._loop, daemon=True, name="AudioMgr"
+        )
         self._thread.start()
 
-    def _loop(self):
-        """Background loop yang memproses audio queue dari orchestrator."""
-        while True:
-            text = self.orch.pop_audio()
-            if text:
-                self._play(text)
-            else:
-                time.sleep(0.05)
+    # ─── Public API ───────────────────────────────────────────────────────────
 
-    def queue(self, text, label=None):
+    def queue(self, text: str, priority: int = NORMAL, label: str = "",
+              cooldown: Optional[float] = None):
         """
-        Tambah audio ke queue.
-        label: digunakan untuk cooldown (agar label yang sama tidak berulang terlalu cepat)
+        Add text to the playback queue.
+        If priority is higher than current playback, interrupt immediately.
         """
-        key = label or text
+        cd = cooldown if cooldown is not None else self._cooldown_s
 
-        with self._lock:
-            last = self._last_played[key]
+        if label and cd > 0:
+            with self._cd_lock:
+                if time.monotonic() - self._cooldown_map[label] < cd:
+                    return
 
-        if time.time() - last < AUDIO_COOLDOWN_S:
-            return  # Masih dalam cooldown
+        wav  = self._find_wav(text)
+        task = _Task(text, wav, priority, label)
+        self._pq.put((priority, task.seq, task))
 
-        with self._lock:
-            self._last_played[key] = time.time()
+        if priority < self._current_priority:
+            self._interrupt.set()
 
-        self.orch.enqueue_audio(text)
+    def queue_object(self, label: str, position: str, is_danger: bool = False):
+        """Helper for detected objects. Danger → CRITICAL, otherwise HIGH."""
+        priority = CRITICAL if is_danger else HIGH
+        self.queue(
+            text=f"{label} {position}",
+            priority=priority,
+            label=f"obj_{label}_{position}",
+        )
 
-    def _play(self, text):
-        """Coba mainkan WAV, fallback ke log/Web UI jika tidak ada."""
-        filename = self._text_to_filename(text)
-        wav_path = os.path.join(AUDIO_DIR, filename)
+    def queue_system(self, event: str):
+        """System events (mode switches, low battery, …)."""
+        self.queue(event, priority=NORMAL, label=f"sys_{event}")
 
-        if os.path.exists(wav_path):
-            self._play_file(wav_path)
-        else:
-            # Fallback: kirim teks ke Web UI sebagai notifikasi audio
-            self.logger.info(f"[Audio fallback] {text}")
-            # Web UI akan membacanya via Web Speech API
+    def queue_info(self, text: str):
+        """Low-priority informational audio (scene description, etc.)."""
+        self.queue(text, priority=LOW)
 
-    def _ensure_pcm(self, source_path) -> str | None:
-        """
-        Konversi file audio apapun ke PCM s16le 48kHz mono via FFmpeg.
-        Hasil di-cache sebagai <base>.pcm di sebelah file sumber.
-        Returns path file PCM, atau None jika gagal.
-        """
-        base    = os.path.splitext(source_path)[0]
-        pcm     = f"{base}.pcm"
+    def clear(self):
+        """Discard all pending tasks and stop current playback."""
+        while not self._pq.empty():
+            try:
+                self._pq.get_nowait()
+            except queue.Empty:
+                break
+        self._interrupt.set()
 
+    def stop(self):
+        """Shut down the manager thread."""
+        self._stop.set()
+        self._interrupt.set()
+
+    # ─── Internals ────────────────────────────────────────────────────────────
+
+    def _find_wav(self, text: str) -> Optional[str]:
+        """Locate pre-generated WAV for this text, or return None."""
+        safe = text.lower().strip()
+        safe = safe.replace(" ", "_").replace("-", "_").replace(",", "")
+        safe = "".join(c for c in safe if c.isalnum() or c == "_")
+        for candidate in (
+            os.path.join(self._audio_dir, f"{safe}.wav"),
+            os.path.join(self._audio_dir, f"obj_{safe}.wav"),
+            os.path.join(self._audio_dir, f"system_{safe}.wav"),
+        ):
+            if os.path.exists(candidate):
+                return candidate
+        return None
+
+    def _ensure_pcm(self, wav_path: str) -> Optional[str]:
+        """Convert WAV → PCM s16le 48 kHz mono; result cached next to source."""
+        pcm = os.path.splitext(wav_path)[0] + ".pcm"
         if os.path.exists(pcm):
             return pcm
-
-        # Deteksi format untuk logging
-        try:
-            with open(source_path, 'rb') as f:
-                hdr = f.read(4)
-            fmt = "WAV" if hdr.startswith(b'RIFF') else \
-                  "MP3" if (hdr.startswith(b'ID3') or hdr[:2] in (b'\xff\xfb', b'\xff\xf3')) else \
-                  "?"
-            self.logger.info(f"[Audio] Konversi {fmt} → PCM: {os.path.basename(source_path)}")
-        except Exception:
-            pass
-
         ret = os.system(
-            f"ffmpeg -v warning -y -i '{source_path}' "
+            f"ffmpeg -v warning -y -i '{wav_path}' "
             f"-f s16le -acodec pcm_s16le -ar {_PCM_RATE} -ac 1 '{pcm}'"
         )
-        if ret != 0 or not os.path.exists(pcm):
-            self.logger.error(f"[Audio] FFmpeg gagal konversi: {source_path}")
-            return None
-        return pcm
+        return pcm if ret == 0 and os.path.exists(pcm) else None
 
-    def _play_file(self, path):
-        """Konversi ke PCM lalu play via maix.audio.Player."""
+    @property
+    def current_text(self) -> str:
+        with self._text_lock:
+            return self._current_text
+
+    def _play_task(self, task: _Task):
+        """Execute playback for one task; blocks until done or interrupted."""
+        if task.label:
+            with self._cd_lock:
+                self._cooldown_map[task.label] = time.monotonic()
+
+        self._current_priority = task.priority
+        with self._text_lock:
+            self._current_text = task.text
+        self._interrupt.clear()
+
+        played = False
+        if task.wav_path:
+            pcm = self._ensure_pcm(task.wav_path)
+            if pcm:
+                played = self._play_pcm(pcm)
+
+        if not played:
+            self.logger.info(f"[Audio fallback] {task.text}", module="AudioMgr")
+
+        self._current_priority = LOW
+        with self._text_lock:
+            self._current_text = ""
+
+    def _play_pcm(self, pcm_path: str) -> bool:
+        """
+        Play PCM via maix.audio.Player with interrupt support.
+
+        player.stop() is optional — some MaixPy builds lack it.
+        When stop() raises AttributeError we fall back to the deadline
+        timer: the current audio chunk finishes but we return immediately
+        so the higher-priority task starts as soon as possible.
+        """
         try:
             from maix import audio as maix_audio
         except ImportError:
-            self.logger.warn("[Audio] MaixPy tidak tersedia — skip playback")
-            return
-
-        pcm_path = self._ensure_pcm(path)
-        if not pcm_path:
-            return
+            return False
 
         try:
-            with open(pcm_path, 'rb') as f:
+            with open(pcm_path, "rb") as f:
                 pcm_data = f.read()
 
             player = maix_audio.Player()
-            player.volume(80)
-            player.play(bytes(pcm_data))
+            try:
+                from config import cfg as _cfg
+                player.volume(_cfg.AUDIO_VOLUME)
+            except Exception:
+                player.volume(80)
+            player.play(bytes(pcm_data))   # non-blocking start
 
-            # Tunggu selesai: estimasi durasi dari ukuran PCM + buffer kecil
-            duration_s = len(pcm_data) / _PCM_BYTES_S
-            time.sleep(duration_s + 0.15)
+            duration_s = len(pcm_data) / _PCM_BYTES_S + 0.15
+            deadline   = time.monotonic() + duration_s
 
-            self.logger.ok(f"[Audio] {os.path.basename(path)}")
+            while time.monotonic() < deadline:
+                if self._interrupt.is_set() or self._stop.is_set():
+                    try:
+                        player.stop()
+                    except AttributeError:
+                        # player.stop() not available — can't hard-stop;
+                        # return True immediately so the higher-priority task
+                        # starts without waiting for the full deadline.
+                        pass
+                    except Exception:
+                        pass
+                    return True
+                time.sleep(0.02)
+
+            return True
+
         except Exception as e:
-            self.logger.error(f"[Audio] Play error: {e}")
+            self.logger.error(f"Play error: {e}", module="AudioMgr")
+            return False
 
-    def _text_to_filename(self, text):
-        """Konversi teks ke nama file WAV."""
-        clean = text.lower().strip()
-        clean = clean.replace(" ", "_").replace("-", "_")
-        clean = "".join(c for c in clean if c.isalnum() or c == "_")
-        return f"{clean}.wav"
-
-    def queue_object(self, label, position):
-        """Helper khusus untuk object detection — pakai naming convention yang standar."""
-        text = f"{label} {position}"
-        filename_label = label.replace(" ", "_")
-        filename_pos = position.replace("-", "_").replace(" ", "_")
-        filename = f"obj_{filename_label}_{filename_pos}.wav"
-
-        wav_path = os.path.join(AUDIO_DIR, filename)
-        key = f"obj_{label}_{position}"
-
-        with self._lock:
-            last = self._last_played[key]
-
-        if time.time() - last < AUDIO_COOLDOWN_S:
-            return
-
-        with self._lock:
-            self._last_played[key] = time.time()
-
-        if os.path.exists(wav_path):
-            self._play_file(wav_path)
-        else:
-            self.orch.enqueue_audio(text)
-            self.logger.info(f"[Audio sim] {text}")
-
-    def queue_system(self, event):
-        """Putar system audio: 'mode_explorer_aktif', 'baterai_lemah', dll."""
-        wav_path = os.path.join(AUDIO_DIR, f"system_{event}.wav")
-        key = f"system_{event}"
-
-        with self._lock:
-            last = self._last_played[key]
-
-        if time.time() - last < AUDIO_COOLDOWN_S:
-            return
-
-        with self._lock:
-            self._last_played[key] = time.time()
-
-        if os.path.exists(wav_path):
-            self._play_file(wav_path)
-        else:
-            readable = event.replace("_", " ")
-            self.orch.enqueue_audio(readable)
+    def _loop(self):
+        while not self._stop.is_set():
+            try:
+                _, _, task = self._pq.get(timeout=0.1)
+                self._play_task(task)
+            except queue.Empty:
+                pass
+            except Exception as e:
+                self.logger.error(f"Loop error: {e}", module="AudioMgr")

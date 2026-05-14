@@ -164,6 +164,9 @@
         <button class="ctrl-btn ctrl-bench" onclick="cmdBenchmark()">
           <span class="ctrl-icon">⏱</span> Benchmark
         </button>
+        <button class="ctrl-btn ctrl-ai-settings" onclick="openAISettings()">
+          <span class="ctrl-icon">⚙</span> AI Settings
+        </button>
       </div>
     </div>
 
@@ -483,6 +486,178 @@
 
       </div>
 
+    </div><!-- end .bench-modal -->
+  </div><!-- end .bench-overlay -->
+
+  <!-- ═══════════════════════════════════════════════════════════
+       AI SETTINGS MODAL
+       ═══════════════════════════════════════════════════════════ -->
+  <div class="bench-overlay" id="aiSettingsOverlay" onclick="closeAISettings(event)">
+    <div class="bench-modal" id="aiSettingsModal" style="max-width:560px;">
+
+      <!-- Header -->
+      <div class="bench-header">
+        <div class="bench-header-left">
+          <span class="bench-logo">⚙</span>
+          <div>
+            <div class="bench-title">AI Vision Settings</div>
+            <div class="bench-subtitle">Provider, model, API keys, dan prompt</div>
+          </div>
+        </div>
+        <button class="bench-close" onclick="closeAISettings()">✕</button>
+      </div>
+
+      <!-- Tab navigation -->
+      <div class="bench-tabs" style="border-top:1px solid var(--border);">
+        <button class="bench-tab active" id="aiTabAI"       onclick="switchAITab('ai')">
+          <span class="bench-tab-icon">🤖</span> AI Vision
+        </button>
+        <button class="bench-tab"        id="aiTabHardware" onclick="switchAITab('hardware')">
+          <span class="bench-tab-icon">⚙</span> Hardware
+        </button>
+      </div>
+
+      <!-- Body -->
+      <div style="padding:16px 20px;overflow-y:auto;max-height:65vh;">
+
+      <!-- ── TAB: AI Vision ─────────────────────── -->
+      <div id="aiPanelAI">
+        <!-- Provider selector -->
+        <div class="ai-set-row">
+          <label class="ai-set-label">Provider Aktif</label>
+          <div class="ai-set-provider-group" id="aiProviderGroup">
+            <button class="ai-prov-btn" id="provBtn_openai" onclick="selectProvider('openai')">OpenAI</button>
+            <button class="ai-prov-btn" id="provBtn_gemini" onclick="selectProvider('gemini')">Gemini</button>
+            <button class="ai-prov-btn" id="provBtn_claude" onclick="selectProvider('claude')">Claude</button>
+          </div>
+        </div>
+
+        <!-- Timeout -->
+        <div class="ai-set-row">
+          <label class="ai-set-label">Timeout (detik)</label>
+          <input class="ai-set-input ai-set-input-sm" type="number" id="aiTimeout" min="5" max="60" value="15" />
+        </div>
+
+        <!-- ── OpenAI ── -->
+        <div class="ai-provider-section" id="aiSec_openai">
+          <div class="ai-sec-title">OpenAI</div>
+          <div class="ai-set-row">
+            <label class="ai-set-label">API Key</label>
+            <input class="ai-set-input" type="password" id="openaiKey"
+                   placeholder="sk-… (kosong = tidak diubah)" autocomplete="off" />
+            <span class="ai-key-hint" id="openaiKeyHint"></span>
+          </div>
+          <div class="ai-set-row">
+            <label class="ai-set-label">Model</label>
+            <select class="ai-set-select" id="openaiModel">
+              <option value="gpt-4o-mini">gpt-4o-mini</option>
+              <option value="gpt-4o">gpt-4o</option>
+              <option value="gpt-4-turbo">gpt-4-turbo</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- ── Gemini ── -->
+        <div class="ai-provider-section" id="aiSec_gemini" style="display:none;">
+          <div class="ai-sec-title">Google Gemini</div>
+          <div class="ai-set-row">
+            <label class="ai-set-label">API Key</label>
+            <input class="ai-set-input" type="password" id="geminiKey"
+                   placeholder="AIza… (kosong = tidak diubah)" autocomplete="off" />
+            <span class="ai-key-hint" id="geminiKeyHint"></span>
+          </div>
+          <div class="ai-set-row">
+            <label class="ai-set-label">Model</label>
+            <select class="ai-set-select" id="geminiModel">
+              <option value="gemini-1.5-flash">gemini-1.5-flash</option>
+              <option value="gemini-1.5-pro">gemini-1.5-pro</option>
+              <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- ── Claude ── -->
+        <div class="ai-provider-section" id="aiSec_claude" style="display:none;">
+          <div class="ai-sec-title">Anthropic Claude</div>
+          <div class="ai-set-row">
+            <label class="ai-set-label">API Key</label>
+            <input class="ai-set-input" type="password" id="claudeKey"
+                   placeholder="sk-ant-… (kosong = tidak diubah)" autocomplete="off" />
+            <span class="ai-key-hint" id="claudeKeyHint"></span>
+          </div>
+          <div class="ai-set-row">
+            <label class="ai-set-label">Model</label>
+            <select class="ai-set-select" id="claudeModel">
+              <option value="claude-haiku-4-5-20251001">claude-haiku-4-5 (cepat)</option>
+              <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
+              <option value="claude-opus-4-7">claude-opus-4-7</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- ── Prompts ── -->
+        <div class="ai-sec-title" style="margin-top:16px;">Prompt</div>
+        <div class="ai-set-row ai-set-row-col">
+          <label class="ai-set-label">Deskripsi Scene (Context Mode)</label>
+          <textarea class="ai-set-textarea" id="promptScene" rows="3"></textarea>
+        </div>
+        <div class="ai-set-row ai-set-row-col">
+          <label class="ai-set-label">Scan QRIS</label>
+          <textarea class="ai-set-textarea" id="promptQris" rows="3"></textarea>
+        </div>
+
+      </div><!-- end #aiPanelAI -->
+
+      <!-- ── TAB: Hardware ──────────────────────── -->
+      <div id="aiPanelHardware" style="display:none;">
+        <div class="ai-sec-title">Deteksi</div>
+
+        <div class="ai-set-row">
+          <label class="ai-set-label">Confidence Threshold</label>
+          <input class="ai-set-input ai-set-input-sm" type="number" id="hwConfThreshold"
+                 min="0.1" max="0.9" step="0.05" value="0.5" />
+          <span style="color:var(--text3);font-size:11px;">0.1 – 0.9</span>
+        </div>
+        <div class="ai-set-row" style="margin-bottom:4px;">
+          <label class="ai-set-label"></label>
+          <input type="range" id="hwConfSlider" min="0.1" max="0.9" step="0.05" value="0.5"
+                 style="flex:1;accent-color:var(--accent);"
+                 oninput="document.getElementById('hwConfThreshold').value=parseFloat(this.value).toFixed(2)" />
+        </div>
+        <div class="ai-set-row" style="color:var(--text3);font-size:10px;margin-bottom:16px;">
+          <label class="ai-set-label"></label>
+          <span>Turunkan ke 0.35 di keramaian agar lebih sensitif; naikkan ke 0.7 di tempat sepi untuk kurangi false positive.</span>
+        </div>
+
+        <div class="ai-sec-title">Audio</div>
+        <div class="ai-set-row">
+          <label class="ai-set-label">Volume Speaker</label>
+          <input class="ai-set-input ai-set-input-sm" type="number" id="hwVolume"
+                 min="0" max="100" step="5" value="80" />
+          <span style="color:var(--text3);font-size:11px;">0 – 100</span>
+        </div>
+        <div class="ai-set-row">
+          <label class="ai-set-label"></label>
+          <input type="range" id="hwVolumeSlider" min="0" max="100" step="5" value="80"
+                 style="flex:1;accent-color:var(--accent);"
+                 oninput="document.getElementById('hwVolume').value=this.value" />
+        </div>
+      </div><!-- end #aiPanelHardware -->
+
+        <!-- Footer buttons -->
+        <div class="ai-set-footer">
+          <button class="bench-btn" id="btnAITest" onclick="aiSettingsTest()">
+            🔌 Test Koneksi
+          </button>
+          <span class="ai-test-result" id="aiTestResult"></span>
+          <div style="flex:1"></div>
+          <button class="bench-btn" onclick="closeAISettings()">Batal</button>
+          <button class="bench-btn bench-btn-primary" onclick="aiSettingsSave()">
+            💾 Simpan
+          </button>
+        </div>
+
+      </div><!-- end body -->
     </div><!-- end .bench-modal -->
   </div><!-- end .bench-overlay -->
 

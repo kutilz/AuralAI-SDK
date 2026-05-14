@@ -508,9 +508,17 @@
         <span class="logo-text">AuralAI <span class="logo-sub">Data Collection</span></span>
       </div>
     </div>
-    <div class="status-pill">
-      <span class="status-dot stopped" id="statusDot"></span>
-      <span id="statusText">Offline</span>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <button id="btnDownloadZip" onclick="downloadZip()"
+              style="display:none;background:rgba(168,85,247,0.12);border:1px solid rgba(168,85,247,0.5);
+                     border-radius:8px;color:#a855f7;font-family:inherit;font-size:11px;
+                     padding:5px 10px;cursor:pointer;white-space:nowrap;">
+        ⬇ Download ZIP
+      </button>
+      <div class="status-pill">
+        <span class="status-dot stopped" id="statusDot"></span>
+        <span id="statusText">Offline</span>
+      </div>
     </div>
   </header>
 
@@ -611,6 +619,12 @@
     <button class="viewer-close" onclick="closeViewer()">✕</button>
     <img class="viewer-img" id="viewerImg" src="" alt="" />
     <div class="viewer-meta" id="viewerMeta"></div>
+    <button id="btnDeletePhoto" onclick="deleteCurrentPhoto()"
+            style="margin-top:8px;background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.5);
+                   border-radius:8px;color:#ef4444;font-family:inherit;font-size:13px;
+                   padding:8px 20px;cursor:pointer;">
+      🗑 Hapus Foto Ini
+    </button>
   </div>
 
   <!-- ── TOAST ─────────────────────────────────────────────── -->
@@ -636,7 +650,9 @@ let state = {
   captureCount: 0,
   startTime:    null,
   freeMb:       null,
+  totalMb:      null,
   gallery:      [],
+  _viewerFile:  null,   // filename currently open in viewer
 };
 
 // ══════════════════════════════════════════════════════════════
@@ -687,6 +703,7 @@ async function pollStatus() {
     state.running      = data.running;
     state.captureCount = data.capture_count || 0;
     state.freeMb       = data.free_space_mb;
+    state.totalMb      = data.total_space_mb || state.totalMb;
     state.intervalS    = data.interval_s   || state.intervalS;
     state.quality      = data.quality      || state.quality;
 
@@ -729,6 +746,8 @@ function renderGallery() {
   const count = document.getElementById('galleryCount');
 
   count.textContent = `${state.gallery.length} foto`;
+  document.getElementById('btnDownloadZip').style.display =
+    state.gallery.length > 0 ? '' : 'none';
 
   if (state.gallery.length === 0) {
     grid.innerHTML = '<div class="gallery-empty">Foto akan muncul di sini setelah capture dimulai</div>';
@@ -765,14 +784,19 @@ function updateUI() {
     document.getElementById('statElapsed').textContent = '0:00';
   }
 
-  // Free space
+  // Free space + storage bar
   if (state.freeMb !== null) {
-    document.getElementById('statFree').textContent    = state.freeMb;
-    document.getElementById('storageLabel').textContent = `${state.freeMb} MB tersisa`;
+    const totalMb = state.totalMb || 0;
+    document.getElementById('statFree').textContent = state.freeMb;
+    document.getElementById('storageLabel').textContent =
+      totalMb > 0
+        ? `${state.freeMb} / ${totalMb} MB tersisa`
+        : `${state.freeMb} MB tersisa`;
 
-    // Assume device has ~1GB user space; show used percentage
-    const usedPct = Math.min(100, Math.max(0, (1024 - state.freeMb) / 1024 * 100));
-    const fill    = document.getElementById('storageFill');
+    const usedPct = totalMb > 0
+      ? Math.min(100, Math.max(0, (totalMb - state.freeMb) / totalMb * 100))
+      : 0;
+    const fill = document.getElementById('storageFill');
     fill.style.width = usedPct + '%';
     fill.classList.toggle('critical', state.freeMb < 100);
 
@@ -882,7 +906,8 @@ function adjustQuality(delta) {
 // VIEWER
 // ══════════════════════════════════════════════════════════════
 function openViewer(filename, timestamp, sizeKb) {
-  document.getElementById('viewerImg').src    = `${BASE_URL}/collect/photo/${filename}`;
+  state._viewerFile = filename;
+  document.getElementById('viewerImg').src          = `${BASE_URL}/collect/photo/${filename}`;
   document.getElementById('viewerMeta').textContent = `${filename}  •  ${timestamp}  •  ${sizeKb} KB`;
   document.getElementById('viewerOverlay').classList.add('open');
 }
@@ -891,6 +916,59 @@ function closeViewer(e) {
   if (e && e.target !== document.getElementById('viewerOverlay') && e.type !== 'click') return;
   document.getElementById('viewerOverlay').classList.remove('open');
   document.getElementById('viewerImg').src = '';
+  state._viewerFile = null;
+}
+
+async function deleteCurrentPhoto() {
+  const filename = state._viewerFile;
+  if (!filename) return;
+  if (!confirm(`Hapus foto ini?\n${filename}`)) return;
+
+  try {
+    const res  = await fetch(`${BASE_URL}/collect/delete`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ filename }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      state.gallery    = state.gallery.filter(p => p.filename !== filename);
+      _galleryLastCount = state.gallery.length;
+      renderGallery();
+      closeViewer();
+      showToast('Foto dihapus', 'ok');
+    } else {
+      showToast(`Gagal: ${data.message || data.error}`, 'err');
+    }
+  } catch (e) {
+    showToast('Error saat menghapus', 'err');
+  }
+}
+
+async function downloadZip() {
+  showToast('Membuat ZIP…');
+  try {
+    const res = await fetch(`${BASE_URL}/collect/download`);
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      showToast(`Gagal: ${d.error || res.status}`, 'err');
+      return;
+    }
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    const cd   = res.headers.get('Content-Disposition') || '';
+    const m    = cd.match(/filename="(.+?)"/);
+    a.download = m ? m[1] : 'dataset.zip';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast('Download dimulai', 'ok');
+  } catch (e) {
+    showToast('Error download ZIP', 'err');
+  }
 }
 
 // ══════════════════════════════════════════════════════════════

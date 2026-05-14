@@ -37,13 +37,16 @@ DEFAULT_QUALITY = 85          # JPEG quality (1-100)
 MAX_GALLERY     = 20          # foto terbaru yang disimpan di memory
 
 
-def _free_space_mb(path="/"):
-    """Cek free disk space dalam MB."""
+def _disk_stats(path=CAPTURES_ROOT) -> tuple:
+    """Return (free_mb, total_mb) for the filesystem that holds `path`."""
     try:
+        os.makedirs(path, exist_ok=True)
         s = os.statvfs(path)
-        return (s.f_bavail * s.f_frsize) // (1024 * 1024)
-    except:
-        return 999  # unknown → assume OK
+        free_mb  = (s.f_bavail * s.f_frsize) // 1_048_576
+        total_mb = (s.f_blocks * s.f_frsize) // 1_048_576
+        return free_mb, total_mb
+    except Exception:
+        return 999, 1024
 
 
 class DataCollector:
@@ -84,6 +87,7 @@ class DataCollector:
     def stats(self) -> dict:
         with self._lock:
             elapsed = (time.time() - self.session_start) if self.session_start else 0
+            free_mb, total_mb = _disk_stats(self.session_dir or CAPTURES_ROOT)
             return {
                 "running":        self._running,
                 "capture_count":  self.capture_count,
@@ -91,7 +95,8 @@ class DataCollector:
                 "interval_s":     self.interval_s,
                 "quality":        self.quality,
                 "session_dir":    self.session_dir,
-                "free_space_mb":  _free_space_mb(),
+                "free_space_mb":  free_mb,
+                "total_space_mb": total_mb,
                 "gallery_count":  len(self._gallery),
             }
 
@@ -198,6 +203,69 @@ class DataCollector:
         except:
             return None
 
+    def delete_photo(self, filename: str) -> tuple:
+        """
+        Delete a captured photo from disk and remove its CSV row.
+        Returns (ok, message).
+        """
+        safe = os.path.basename(filename)
+        if not safe.endswith(".jpg"):
+            return False, "Invalid filename"
+
+        # Locate the file across all session dirs
+        path = None
+        for root_dir, _, files in os.walk(CAPTURES_ROOT):
+            if safe in files:
+                path = os.path.join(root_dir, safe)
+                break
+        if path is None:
+            return False, f"File tidak ditemukan: {safe}"
+
+        try:
+            os.remove(path)
+        except Exception as e:
+            return False, str(e)
+
+        # Remove from in-memory gallery
+        with self._lock:
+            self._gallery = [p for p in self._gallery if p["filename"] != safe]
+            csv_path = self.csv_path
+
+        # Rewrite CSV excluding the deleted row
+        if csv_path and os.path.exists(csv_path):
+            try:
+                with open(csv_path, "r", newline="") as f:
+                    rows = list(csv.reader(f))
+                kept = [rows[0]] + [r for r in rows[1:] if len(r) < 2 or r[1] != safe]
+                with open(csv_path, "w", newline="") as f:
+                    csv.writer(f).writerows(kept)
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except Exception:
+                        pass
+            except Exception as e:
+                return True, f"Foto dihapus, CSV error: {e}"
+
+        return True, f"Foto {safe} dihapus"
+
+    def create_session_zip(self) -> tuple:
+        """
+        Zip today's session directory into /tmp.
+        Returns (zip_path_str, error_msg); zip_path is None on failure.
+        """
+        import shutil
+        date_str = datetime.now().strftime("%Y%m%d")
+        src_dir  = os.path.join(CAPTURES_ROOT, date_str)
+        if not os.path.isdir(src_dir):
+            return None, "Tidak ada sesi hari ini"
+        zip_base = f"/tmp/aural_dataset_{date_str}"
+        try:
+            zip_path = shutil.make_archive(zip_base, "zip", src_dir)
+            return zip_path, None
+        except Exception as e:
+            return None, str(e)
+
     # ── Capture Loop ────────────────────────────────────────────────
     def _capture_loop(self):
         # Init camera di dalam thread
@@ -241,6 +309,10 @@ class DataCollector:
                             free_mb,
                         ])
                         self._csv_file.flush()
+                        try:
+                            os.fsync(self._csv_file.fileno())
+                        except Exception:
+                            pass
 
             # Tunggu sampai interval berikutnya (minus waktu yang sudah terpakai)
             elapsed_loop = time.time() - t_loop

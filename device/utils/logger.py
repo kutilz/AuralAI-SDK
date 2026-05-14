@@ -1,60 +1,70 @@
 """
-Logger — Logging ke file dan stream ke Web UI.
+Logger — Structured JSON logging to file + console.
+Web UI stream via get_recent().
 """
 
 import os
+import json
 import time
 import threading
 from collections import deque
-from config import LOG_PATH, LOG_MAX_LINES
 
 
 class Logger:
-    LEVELS = {"info", "ok", "warn", "error"}
+    LEVELS = {"debug": 0, "info": 1, "ok": 2, "warn": 3, "error": 4}
+    _TAGS  = {"debug": "DBG", "info": "INF", "ok": "OK ", "warn": "WRN", "error": "ERR"}
 
-    def __init__(self):
+    def __init__(self, log_path: str = "/root/logs",
+                 max_lines: int = 500, min_level: str = "info"):
         self._lock = threading.Lock()
-        self._buffer = deque(maxlen=LOG_MAX_LINES)
+        self._buffer: deque = deque(maxlen=max_lines)
         self._log_file = None
-        self._init_file()
+        self._min_level = self.LEVELS.get(min_level, 1)
+        self._init_file(log_path)
 
-    def _init_file(self):
+    def _init_file(self, log_path: str):
         try:
-            os.makedirs(LOG_PATH, exist_ok=True)
-            log_name = f"aural_{time.strftime('%Y%m%d_%H%M%S')}.log"
-            self._log_file = open(os.path.join(LOG_PATH, log_name), "a", encoding="utf-8")
+            os.makedirs(log_path, exist_ok=True)
+            name = f"aural_{time.strftime('%Y%m%d_%H%M%S')}.log"
+            self._log_file = open(os.path.join(log_path, name), "a", encoding="utf-8")
         except Exception:
             self._log_file = None
 
-    def _log(self, level, message):
-        ts = time.strftime("%H:%M:%S")
+    def _log(self, level: str, msg: str, module: str = "", **extra):
+        if self.LEVELS.get(level, 0) < self._min_level:
+            return
+
         entry = {
-            "time": ts,
-            "level": level,
-            "message": message,
+            "ts":     time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "level":  level,
+            "module": module,
+            "msg":    msg,
+            **extra,
         }
+        line = json.dumps(entry, ensure_ascii=False)
+
         with self._lock:
             self._buffer.append(entry)
+            if self._log_file:
+                try:
+                    self._log_file.write(line + "\n")
+                    self._log_file.flush()
+                except Exception:
+                    pass
 
-        line = f"[{ts}] [{level.upper():5s}] {message}"
-        print(line)
+        tag = self._TAGS.get(level, "---")
+        mod = f"[{module}] " if module else ""
+        print(f"[{entry['ts']}] {tag} {mod}{msg}")
 
-        if self._log_file:
-            try:
-                self._log_file.write(line + "\n")
-                self._log_file.flush()
-            except Exception:
-                pass
+    def debug(self, msg: str, module: str = "", **kw): self._log("debug", msg, module, **kw)
+    def info(self, msg: str, module: str = "", **kw):  self._log("info",  msg, module, **kw)
+    def ok(self, msg: str, module: str = "", **kw):    self._log("ok",    msg, module, **kw)
+    def warn(self, msg: str, module: str = "", **kw):  self._log("warn",  msg, module, **kw)
+    def error(self, msg: str, module: str = "", **kw): self._log("error", msg, module, **kw)
 
-    def info(self, msg):  self._log("info", msg)
-    def ok(self, msg):    self._log("ok", msg)
-    def warn(self, msg):  self._log("warn", msg)
-    def error(self, msg): self._log("error", msg)
-
-    def get_recent(self, n=50):
+    def get_recent(self, n: int = 50) -> list:
         with self._lock:
-            entries = list(self._buffer)
-        return entries[-n:]
+            return list(self._buffer)[-n:]
 
     def __del__(self):
         if self._log_file:
@@ -64,30 +74,18 @@ class Logger:
                 pass
 
 
-def position_from_bbox(x, y, w, h, frame_w, frame_h):
-    """
-    Tentukan posisi objek dalam grid 3×3 berdasarkan center bounding box.
+# ─── Utility ──────────────────────────────────────────────────────────────────
 
-    Returns: string posisi ('kiri', 'kanan', 'tengah', 'kiri-atas', dst.)
-    """
+def position_from_bbox(x, y, w, h, frame_w, frame_h) -> str:
+    """Map bounding box center to 3×3 grid position string."""
     cx = x + w / 2
     cy = y + h / 2
-
-    col = int(cx / frame_w * 3)   # 0=kiri, 1=tengah, 2=kanan
-    row = int(cy / frame_h * 3)   # 0=atas, 1=tengah, 2=bawah
-
-    col = min(col, 2)
-    row = min(row, 2)
-
-    col_names = ["kiri", "tengah", "kanan"]
-    row_names = ["atas", "tengah", "bawah"]
-
-    col_n = col_names[col]
-    row_n = row_names[row]
-
+    col = min(int(cx / frame_w * 3), 2)
+    row = min(int(cy / frame_h * 3), 2)
+    col_n = ["kiri",  "tengah", "kanan"][col]
+    row_n = ["atas",  "tengah", "bawah"][row]
     if row_n == "tengah":
         return col_n
-    elif col_n == "tengah":
+    if col_n == "tengah":
         return row_n
-    else:
-        return f"{col_n}-{row_n}"
+    return f"{col_n}-{row_n}"
