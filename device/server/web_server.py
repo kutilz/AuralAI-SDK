@@ -132,9 +132,88 @@ class StressRunner:
             }
 
 
+# ─── Benchmark Suite Runner ────────────────────────────────────────────────────
+
+class BenchmarkSuiteRunner:
+    """
+    Runs the standardized 4-test benchmark suite as a subprocess.
+    Results are readable from /tmp/bench_suite_progress.json while running,
+    and from /root/logs/safety_index_report.json when done.
+    """
+    PROGRESS_FILE = "/tmp/bench_suite_progress.json"
+    REPORT_FILE   = "/root/logs/safety_index_report.json"
+
+    def __init__(self):
+        self._proc = None
+        self._lock = threading.Lock()
+
+    def start(self, tests="T1,T2,T3,T4", t1_frames=100, t4_duration=600):
+        with self._lock:
+            if self._proc and self._proc.poll() is None:
+                return False, "Already running"
+            try:
+                script = os.path.join(_DEVICE_DIR, "benchmark", "run_all.py")
+                args   = [
+                    sys.executable, script,
+                    "--tests",       tests,
+                    "--t1-frames",   str(t1_frames),
+                    "--t4-duration", str(t4_duration),
+                ]
+                self._proc = subprocess.Popen(
+                    args,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    cwd=_DEVICE_DIR,
+                )
+                return True, f"Suite started (PID {self._proc.pid})"
+            except Exception as e:
+                return False, str(e)
+
+    def report_only(self):
+        with self._lock:
+            if self._proc and self._proc.poll() is None:
+                return False, "Suite running — wait for it to finish"
+            try:
+                script = os.path.join(_DEVICE_DIR, "benchmark", "run_all.py")
+                subprocess.Popen(
+                    [sys.executable, script, "--report-only"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    cwd=_DEVICE_DIR,
+                )
+                return True, "Report compilation started"
+            except Exception as e:
+                return False, str(e)
+
+    def stop(self):
+        with self._lock:
+            if self._proc and self._proc.poll() is None:
+                self._proc.terminate()
+                return True, "Stopped"
+        return False, "Not running"
+
+    def progress(self):
+        running = self._proc is not None and self._proc.poll() is None
+        try:
+            with open(self.PROGRESS_FILE) as f:
+                data = json.load(f)
+            data["proc_running"] = running
+            return data
+        except Exception:
+            return {"running": running, "step": "idle", "pct": 0, "results": {}}
+
+    def report(self):
+        try:
+            with open(self.REPORT_FILE) as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+
 # ─── Module-level singletons ───────────────────────────────────────────────────
 _benchmark = BenchmarkRunner()
 _stress    = StressRunner()
+_suite     = BenchmarkSuiteRunner()
 
 
 # ─── Request Handler ───────────────────────────────────────────────────────────
@@ -176,6 +255,15 @@ class AuralAIHandler(BaseHTTPRequestHandler):
         # ── Stress endpoints ───────────────────────────────────────────────────
         elif path == "/stress/status":
             self._send_json(_stress.status())
+        # ── Benchmark Suite endpoints ──────────────────────────────────────────
+        elif path == "/suite/progress":
+            self._send_json(_suite.progress())
+        elif path == "/suite/report":
+            r = _suite.report()
+            if r:
+                self._send_json(r)
+            else:
+                self._send_json({"error": "Report not available — run suite first"}, 404)
         # ── Data Collection endpoints ──────────────────────────────────────────
         elif path == "/collect" or path == "/collect/":
             self._serve_file("collect.html", "text/html")
@@ -206,6 +294,15 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             self._handle_stress_start()
         elif path == "/stress/stop":
             ok, msg = _stress.stop()
+            self._send_json({"ok": ok, "message": msg})
+        # ── Benchmark Suite ───────────────────────────────────────────────
+        elif path == "/suite/start":
+            self._handle_suite_start()
+        elif path == "/suite/stop":
+            ok, msg = _suite.stop()
+            self._send_json({"ok": ok, "message": msg})
+        elif path == "/suite/report-only":
+            ok, msg = _suite.report_only()
             self._send_json({"ok": ok, "message": msg})
         # ── Data Collection ───────────────────────────────────────────────────
         elif path == "/collect/start":
@@ -320,6 +417,21 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             cfg.update(data)
             self.logger.info(f"Config updated: {list(data.keys())}")
             self._send_json({"ok": True, "applied": list(data.keys())})
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
+
+    # ─── Benchmark Suite endpoints ─────────────────────────────────────────────
+
+    def _handle_suite_start(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            data   = json.loads(self.rfile.read(length)) if length else {}
+            tests      = data.get("tests",       "T1,T2,T3,T4")
+            t1_frames  = int(data.get("t1_frames",  100))
+            t4_duration = float(data.get("t4_duration", 600))
+            ok, msg = _suite.start(tests=tests, t1_frames=t1_frames,
+                                   t4_duration=t4_duration)
+            self._send_json({"ok": ok, "message": msg})
         except Exception as e:
             self._send_json({"error": str(e)}, 500)
 
