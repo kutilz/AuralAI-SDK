@@ -245,7 +245,9 @@ class AIEngine:
             self.logger.error(f"AI adapter error: {e}", module="AIEngine")
             self.orch.audio_manager.queue_system("gagal_menganalisis")
         except Exception as e:
-            self.logger.error(f"Unexpected adapter error: {e}", module="AIEngine")
+            self.logger.exception(
+                f"Unexpected adapter error: {e}", module="AIEngine", exc=e,
+            )
             self.orch.audio_manager.queue_system("gagal_menganalisis")
 
     def trigger_qris_scan(self):
@@ -269,7 +271,9 @@ class AIEngine:
             self.logger.error(f"AI adapter error: {e}", module="AIEngine")
             self.orch.audio_manager.queue_system("gagal_memindai")
         except Exception as e:
-            self.logger.error(f"Unexpected adapter error: {e}", module="AIEngine")
+            self.logger.exception(
+                f"Unexpected adapter error: {e}", module="AIEngine", exc=e,
+            )
             self.orch.audio_manager.queue_system("gagal_memindai")
 
     def _save_qris_log(self, result: str):
@@ -285,8 +289,10 @@ class AIEngine:
             try:
                 with open(log_file) as f:
                     logs = _json.load(f)
-            except Exception:
-                pass
+            except Exception as e:
+                self.logger.exception(
+                    f"QRIS log read failed: {e}", module="AIEngine", exc=e,
+                )
         logs.append(entry)
         with open(log_file, "w") as f:
             _json.dump(logs, f, indent=2, ensure_ascii=False)

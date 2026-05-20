@@ -375,7 +375,7 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             from utils.health import get_health
             self._send_json(get_health())
         except Exception as e:
-            self._send_json({"error": str(e)}, 500)
+            self._send_error(e)
 
     def _serve_audio(self, filename):
         from config import AUDIO_DIR
@@ -426,7 +426,7 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             self.logger.info(f"Config updated: {list(data.keys())}")
             self._send_json({"ok": True, "applied": list(data.keys())})
         except Exception as e:
-            self._send_json({"error": str(e)}, 500)
+            self._send_error(e)
 
     # ─── Benchmark Suite endpoints ─────────────────────────────────────────────
 
@@ -441,7 +441,7 @@ class AuralAIHandler(BaseHTTPRequestHandler):
                                    t4_duration=t4_duration)
             self._send_json({"ok": ok, "message": msg})
         except Exception as e:
-            self._send_json({"error": str(e)}, 500)
+            self._send_error(e)
 
     # ─── Benchmark endpoints ───────────────────────────────────────────────────
 
@@ -453,7 +453,7 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             ok, msg = _benchmark.start(section)
             self._send_json({"ok": ok, "message": msg})
         except Exception as e:
-            self._send_json({"error": str(e)}, 500)
+            self._send_error(e)
 
     # ─── Stress endpoints ──────────────────────────────────────────────────────
 
@@ -465,7 +465,7 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             ok, msg = _stress.start(hours)
             self._send_json({"ok": ok, "message": msg})
         except Exception as e:
-            self._send_json({"error": str(e)}, 500)
+            self._send_error(e)
 
     # ─── Data Collection endpoints ─────────────────────────────────────────────
 
@@ -512,7 +512,7 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             )
             self._send_json({"ok": ok, "message": msg})
         except Exception as e:
-            self._send_json({"error": str(e)}, 500)
+            self._send_error(e)
 
     def _handle_collect_stop(self):
         if self.dc is None:
@@ -522,7 +522,7 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             ok, msg = self.dc.stop()
             self._send_json({"ok": ok, "message": msg})
         except Exception as e:
-            self._send_json({"error": str(e)}, 500)
+            self._send_error(e)
 
     def _handle_collect_delete(self):
         if self.dc is None:
@@ -535,7 +535,7 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             ok, msg  = self.dc.delete_photo(filename)
             self._send_json({"ok": ok, "message": msg})
         except Exception as e:
-            self._send_json({"error": str(e)}, 500)
+            self._send_error(e)
 
     def _serve_collect_download(self):
         if self.dc is None:
@@ -559,7 +559,7 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
         except Exception as e:
-            self._send_json({"error": str(e)}, 500)
+            self._send_error(e)
 
     def _serve_config(self):
         from config import cfg
@@ -619,7 +619,7 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             )
             self._send_json({"ok": True, "applied": list(payload.keys())})
         except Exception as e:
-            self._send_json({"error": str(e)}, 500)
+            self._send_error(e)
 
     def _handle_ai_settings_test(self):
         try:
@@ -631,6 +631,7 @@ class AuralAIHandler(BaseHTTPRequestHandler):
         except ValueError as e:
             self._send_json({"ok": False, "message": str(e)}, 400)
         except Exception as e:
+            self.logger.exception(str(e), module="WebServer", exc=e)
             self._send_json({"ok": False, "message": str(e)}, 500)
 
     # ─── Helpers ───────────────────────────────────────────────────────────────
@@ -646,6 +647,15 @@ class AuralAIHandler(BaseHTTPRequestHandler):
 
     def _send_404(self):
         self._send_json({"error": "not found"}, 404)
+
+    def _send_error(self, exc: Exception, status: int = 500, context: str = ""):
+        """Log full traceback + return error JSON. Use in handler except blocks."""
+        msg = f"{context}: {exc}" if context else str(exc)
+        try:
+            self.logger.exception(msg, module="WebServer", exc=exc)
+        except Exception:
+            pass
+        self._send_json({"error": str(exc)}, status)
 
 
 # ─── WebServer ─────────────────────────────────────────────────────────────────

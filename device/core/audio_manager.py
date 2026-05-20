@@ -245,7 +245,7 @@ class AudioManager:
             return True
 
         except Exception as e:
-            self.logger.error(f"Play error: {e}", module="AudioMgr")
+            self.logger.exception(f"Play error: {e}", module="AudioMgr", exc=e)
             return False
 
     def _loop(self):
@@ -256,4 +256,4 @@ class AudioManager:
             except queue.Empty:
                 pass
             except Exception as e:
-                self.logger.error(f"Loop error: {e}", module="AudioMgr")
+                self.logger.exception(f"Loop error: {e}", module="AudioMgr", exc=e)
