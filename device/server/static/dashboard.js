@@ -424,9 +424,16 @@ function setMode(mode) {
 }
 
 function syncModeButtons(mode) {
-  document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
   const map = { explorer:'btnExplorer', context:'btnContext', qris:'btnQris' };
-  document.getElementById(map[mode])?.classList.add('active');
+  document.querySelectorAll('.mode-btn').forEach(b => {
+    b.classList.remove('active');
+    b.setAttribute('aria-pressed', 'false');
+  });
+  const activeBtn = document.getElementById(map[mode]);
+  if (activeBtn) {
+    activeBtn.classList.add('active');
+    activeBtn.setAttribute('aria-pressed', 'true');
+  }
 }
 
 function cmdAIFocus() {
@@ -538,17 +545,44 @@ const benchState = {
   _stressPollTimer: null,
 };
 
-function openBenchModal()  {
-  document.getElementById('benchOverlay').classList.add('open');
+let _benchModalOpener = null;
+function openBenchModal() {
+  _benchModalOpener = document.activeElement;
+  const overlay = document.getElementById('benchOverlay');
+  overlay.classList.add('open');
+  // Focus first focusable element in modal
+  const first = overlay.querySelector('button, [tabindex]:not([tabindex="-1"])');
+  if (first) first.focus();
   if (benchState.currentTab === 'longterm') { stressRenderHistory(); _stressStartPolling(); }
+  // Trap focus inside modal
+  overlay.addEventListener('keydown', _trapFocusBench);
 }
-function closeBenchModal(e) { if (e && e.target !== document.getElementById('benchOverlay')) return; document.getElementById('benchOverlay').classList.remove('open'); }
+function closeBenchModal(e) {
+  if (e && e.target !== document.getElementById('benchOverlay')) return;
+  document.getElementById('benchOverlay').classList.remove('open');
+  document.getElementById('benchOverlay').removeEventListener('keydown', _trapFocusBench);
+  if (_benchModalOpener) { _benchModalOpener.focus(); _benchModalOpener = null; }
+}
+function _trapFocusBench(e) {
+  if (e.key !== 'Tab') return;
+  const modal = document.getElementById('benchModal');
+  const focusable = [...modal.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')];
+  if (!focusable.length) return;
+  const first = focusable[0], last = focusable[focusable.length - 1];
+  if (e.shiftKey) { if (document.activeElement === first) { e.preventDefault(); last.focus(); } }
+  else            { if (document.activeElement === last)  { e.preventDefault(); first.focus(); } }
+}
 
 function switchBenchTab(tab) {
   benchState.currentTab = tab;
   ['quick','qris','longterm'].forEach(t => {
-    document.getElementById(`tab${t.charAt(0).toUpperCase()+t.slice(1)}`).classList.toggle('active', t === tab);
-    document.getElementById(`panel${t.charAt(0).toUpperCase()+t.slice(1)}`).style.display = t === tab ? 'flex' : 'none';
+    const tabId   = `tab${t.charAt(0).toUpperCase()+t.slice(1)}`;
+    const panelId = `panel${t.charAt(0).toUpperCase()+t.slice(1)}`;
+    const isActive = t === tab;
+    const tabEl = document.getElementById(tabId);
+    tabEl.classList.toggle('active', isActive);
+    tabEl.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    document.getElementById(panelId).style.display = isActive ? 'flex' : 'none';
   });
   if (tab === 'longterm') {
     stressRenderHistory();
@@ -967,7 +1001,12 @@ async function _stressPoll() {
 }
 
 // ── Keyboard ────────────────────────────────────────────────────────────────────
-document.addEventListener('keydown', e => { if (e.key==='Escape') closeBenchModal(); });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    if (document.getElementById('benchOverlay').classList.contains('open'))      closeBenchModal();
+    if (document.getElementById('aiSettingsOverlay').classList.contains('open')) closeAISettings();
+  }
+});
 
 // ── Init ────────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -1007,32 +1046,58 @@ document.addEventListener('DOMContentLoaded', () => {
 let _aiCurrentProvider = 'openai';
 let _aiCurrentTab      = 'ai';
 
+let _aiSettingsOpener = null;
 function openAISettings() {
-  document.getElementById('aiSettingsOverlay').classList.add('open');
+  _aiSettingsOpener = document.activeElement;
+  const overlay = document.getElementById('aiSettingsOverlay');
+  overlay.classList.add('open');
   switchAITab(_aiCurrentTab);
   aiSettingsLoad();
+  // Focus first focusable element
+  const first = overlay.querySelector('button:not([disabled]), input:not([disabled]), select:not([disabled])');
+  if (first) first.focus();
+  overlay.addEventListener('keydown', _trapFocusAI);
 }
 
 function switchAITab(tab) {
   _aiCurrentTab = tab;
   document.getElementById('aiPanelAI').style.display       = tab === 'ai'       ? '' : 'none';
   document.getElementById('aiPanelHardware').style.display = tab === 'hardware' ? '' : 'none';
-  document.getElementById('aiTabAI').classList.toggle('active',       tab === 'ai');
-  document.getElementById('aiTabHardware').classList.toggle('active', tab === 'hardware');
+  ['aiTabAI','aiTabHardware'].forEach(id => {
+    const el = document.getElementById(id);
+    const isActive = (id === 'aiTabAI' && tab === 'ai') || (id === 'aiTabHardware' && tab === 'hardware');
+    el.classList.toggle('active', isActive);
+    el.setAttribute('aria-selected', isActive ? 'true' : 'false');
+  });
 }
 
 function closeAISettings(e) {
   if (e && e.target !== document.getElementById('aiSettingsOverlay')) return;
   document.getElementById('aiSettingsOverlay').classList.remove('open');
+  document.getElementById('aiSettingsOverlay').removeEventListener('keydown', _trapFocusAI);
   document.getElementById('aiTestResult').textContent = '';
   document.getElementById('aiTestResult').className   = 'ai-test-result';
+  if (_aiSettingsOpener) { _aiSettingsOpener.focus(); _aiSettingsOpener = null; }
+}
+
+function _trapFocusAI(e) {
+  if (e.key !== 'Tab') return;
+  const modal = document.getElementById('aiSettingsModal');
+  const focusable = [...modal.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')];
+  if (!focusable.length) return;
+  const first = focusable[0], last = focusable[focusable.length - 1];
+  if (e.shiftKey) { if (document.activeElement === first) { e.preventDefault(); last.focus(); } }
+  else            { if (document.activeElement === last)  { e.preventDefault(); first.focus(); } }
 }
 
 function selectProvider(p) {
   _aiCurrentProvider = p;
   ['openai','gemini','claude'].forEach(name => {
-    document.getElementById(`provBtn_${name}`).classList.toggle('active', name === p);
-    document.getElementById(`aiSec_${name}`).style.display = name === p ? '' : 'none';
+    const btn = document.getElementById(`provBtn_${name}`);
+    const isActive = name === p;
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+    document.getElementById(`aiSec_${name}`).style.display = isActive ? '' : 'none';
   });
 }
 

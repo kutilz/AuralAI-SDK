@@ -17,7 +17,7 @@
   --yellow: #eab308;
   --text: #e2e8f0;
   --text2: #94a3b8;
-  --text3: #64748b;
+  --text3: #8294a8; /* was #64748b — bumped for WCAG 4.5:1 on all dark backgrounds */
   --font: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
   --radius: 8px;
   --radius-lg: 12px;
@@ -1055,7 +1055,7 @@ body {
   background: rgba(168, 85, 247, 0.1);
   color: var(--accent4);
 }
-.bench-chip input { display: none; }
+.bench-chip input { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
 
 .bench-num-input {
   width: 56px;
@@ -1690,6 +1690,109 @@ body {
   padding-bottom: 4px;
   border-bottom: 1px solid var(--border);
 }
+
+/* ===== FOCUS VISIBLE (WCAG 2.4.7) ===== */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ===== VISUALLY HIDDEN UTILITY (for accessible checkboxes) ===== */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ===== WCAG BADGE ===== */
+.wcag-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px 3px 10px;
+  background: rgba(0, 212, 170, 0.08);
+  border: 1px solid rgba(0, 212, 170, 0.3);
+  border-radius: 12px;
+  font-size: 10px;
+  color: var(--accent);
+  white-space: nowrap;
+  position: relative;
+  cursor: default;
+  user-select: none;
+}
+
+.wcag-badge-label { font-weight: 700; letter-spacing: 0.5px; }
+
+.wcag-info-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  font-size: 9px;
+  font-weight: 700;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-family: var(--font);
+  padding: 0;
+  line-height: 1;
+}
+
+.wcag-tooltip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  width: 260px;
+  background: var(--bg2);
+  border: 1px solid var(--border-bright);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  font-size: 11px;
+  color: var(--text2);
+  line-height: 1.6;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s, transform 0.15s;
+  transform: translateY(4px);
+  z-index: 1000;
+  text-align: left;
+}
+
+.wcag-badge:hover .wcag-tooltip,
+.wcag-info-btn:focus + .wcag-tooltip,
+.wcag-info-btn[aria-expanded="true"] + .wcag-tooltip {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.wcag-tooltip-title {
+  color: var(--accent);
+  font-weight: 700;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+
+.wcag-tooltip-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.wcag-tooltip-list li::before { content: '✓ '; color: var(--green); }
 
 /* ===== RESPONSIVE ===== */
 @media (max-width: 700px) {

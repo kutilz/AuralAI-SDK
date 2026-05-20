@@ -55,3 +55,6 @@ companion/captures/
 *.png
 
 maix-docs/
+maix_docs/
+.gstack/
+.clone/

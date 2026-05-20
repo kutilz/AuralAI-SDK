@@ -7,13 +7,13 @@
 
 ## Fitur
 
-| Phase | Fitur | Status |
-|-------|-------|--------|
-| **0** | Web Dashboard, Camera Preview, Log Stream | ✅ Ready |
-| **0b** | Companion PC (MaixCAM + Flask, MVP teruji) | ✅ `companion/` + `device/aural_maix.py` |
-| **1** | Object Detection (YOLO11n COCO), Audio Output, AI Focus Mode | 🔧 In Progress |
-| **2** | Scene Description (OpenAI Vision), QRIS Verifier | 📋 Planned |
-| **3** | Custom Model Pipeline, Dataset Capture Tool | 📋 Planned |
+| Phase  | Fitur                                                        | Status                                  |
+| ------ | ------------------------------------------------------------ | --------------------------------------- |
+| **0**  | Web Dashboard, Camera Preview, Log Stream                    | ✅ Ready                                 |
+| **0b** | Companion PC (MaixCAM + Flask, MVP teruji)                   | ✅ `companion/` + `device/aural_maix.py` |
+| **1**  | Object Detection (YOLO11n COCO), Audio Output, AI Focus Mode | 🔧 In Progress                          |
+| **2**  | Scene Description (OpenAI Vision), QRIS Verifier             | 📋 Planned                              |
+| **3**  | Custom Model Pipeline, Dataset Capture Tool                  | 📋 Planned                              |
 
 ---
 
@@ -124,15 +124,15 @@ aural-ai-sdk/
 
 ## API Endpoints
 
-| Method | Endpoint | Fungsi |
-|--------|----------|--------|
-| `GET` | `/` | Web Dashboard |
-| `GET` | `/snapshot` | JPEG frame terbaru |
-| `GET` | `/status` | JSON: mode, detections, latency |
-| `POST` | `/command` | `{"cmd": "focus"\|"capture"\|"qris"\|"describe"}` |
-| `GET` | `/audio/{file}` | Serve WAV file |
-| `GET` | `/logs` | Log terbaru (50 baris) |
-| `POST` | `/config` | Update konfigurasi |
+| Method | Endpoint        | Fungsi                                            |
+| ------ | --------------- | ------------------------------------------------- |
+| `GET`  | `/`             | Web Dashboard                                     |
+| `GET`  | `/snapshot`     | JPEG frame terbaru                                |
+| `GET`  | `/status`       | JSON: mode, detections, latency                   |
+| `POST` | `/command`      | `{"cmd": "focus"\|"capture"\|"qris"\|"describe"}` |
+| `GET`  | `/audio/{file}` | Serve WAV file                                    |
+| `GET`  | `/logs`         | Log terbaru (50 baris)                            |
+| `POST` | `/config`       | Update konfigurasi                                |
 
 ---
 

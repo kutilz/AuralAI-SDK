@@ -2,7 +2,7 @@
 <html lang="id">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="theme-color" content="#0a0c10" />
   <title>AuralAI — Data Collection</title>
@@ -23,7 +23,7 @@
       --purple:   #a855f7;
       --text:     #e2e8f0;
       --text2:    #94a3b8;
-      --text3:    #64748b;
+      --text3:    #8294a8; /* was #64748b — bumped for WCAG 4.5:1 */
       --font:     'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
       --r:        12px;
       --safe-top: env(safe-area-inset-top, 0px);
@@ -491,6 +491,12 @@
     .toast.ok   { border-color: var(--green); color: var(--green); }
     .toast.err  { border-color: var(--red);   color: var(--red); }
 
+    /* ══ FOCUS VISIBLE (WCAG 2.4.7) ════════════════════════════ */
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+    /* ══ GALLERY THUMB keyboard focus ══════════════════════════ */
+    .gallery-thumb [role="button"]:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
     /* ══ RESPONSIVE: bigger screens ════════════════════════════ */
     @media (min-width: 480px) {
       .camera-section { max-height: 60dvh; }
@@ -503,20 +509,27 @@
   <!-- ── HEADER ──────────────────────────────────────────────── -->
   <header class="header">
     <div class="header-left">
-      <span class="logo-icon">◉</span>
+      <span class="logo-icon" aria-hidden="true">◉</span>
       <div>
         <span class="logo-text">AuralAI <span class="logo-sub">Data Collection</span></span>
       </div>
     </div>
     <div style="display:flex;align-items:center;gap:8px;">
-      <button id="btnDownloadZip" onclick="downloadZip()"
+      <!-- WCAG Badge -->
+      <div style="display:inline-flex;align-items:center;gap:5px;padding:3px 8px 3px 10px;background:rgba(0,212,170,0.08);border:1px solid rgba(0,212,170,0.3);border-radius:12px;font-size:10px;color:#00d4aa;white-space:nowrap;position:relative;" role="complementary" aria-label="Informasi aksesibilitas">
+        <span style="font-weight:700;letter-spacing:0.5px;">WCAG 2.1 AA</span>
+        <button onclick="this.setAttribute('aria-expanded',this.getAttribute('aria-expanded')==='true'?'false':'true')"
+                aria-label="Detail standar aksesibilitas"
+                style="display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;border:1px solid currentColor;font-size:9px;font-weight:700;background:transparent;color:inherit;cursor:pointer;font-family:inherit;padding:0;line-height:1;">i</button>
+      </div>
+      <button id="btnDownloadZip" onclick="downloadZip()" aria-label="Download semua foto sebagai file ZIP"
               style="display:none;background:rgba(168,85,247,0.12);border:1px solid rgba(168,85,247,0.5);
                      border-radius:8px;color:#a855f7;font-family:inherit;font-size:11px;
                      padding:5px 10px;cursor:pointer;white-space:nowrap;">
-        ⬇ Download ZIP
+        <span aria-hidden="true">⬇</span> Download ZIP
       </button>
-      <div class="status-pill">
-        <span class="status-dot stopped" id="statusDot"></span>
+      <div class="status-pill" aria-live="polite" aria-label="Status koneksi">
+        <span class="status-dot stopped" id="statusDot" aria-hidden="true"></span>
         <span id="statusText">Offline</span>
       </div>
     </div>
@@ -544,49 +557,49 @@
   </div>
 
   <!-- ── STATS ROW ───────────────────────────────────────────── -->
-  <div class="stats-row">
+  <div class="stats-row" role="region" aria-label="Statistik capture">
     <div class="stat-cell">
-      <div class="stat-num green" id="statCount">0</div>
-      <div class="stat-label">Foto</div>
+      <div class="stat-num green" id="statCount" aria-live="polite" aria-label="Jumlah foto">0</div>
+      <div class="stat-label" aria-hidden="true">Foto</div>
     </div>
     <div class="stat-cell">
-      <div class="stat-num orange" id="statElapsed">0:00</div>
-      <div class="stat-label">Waktu</div>
+      <div class="stat-num orange" id="statElapsed" aria-live="polite" aria-label="Waktu berjalan">0:00</div>
+      <div class="stat-label" aria-hidden="true">Waktu</div>
     </div>
     <div class="stat-cell">
-      <div class="stat-num" id="statInterval">1.0s</div>
-      <div class="stat-label">Interval</div>
+      <div class="stat-num" id="statInterval" aria-live="polite" aria-label="Interval capture">1.0s</div>
+      <div class="stat-label" aria-hidden="true">Interval</div>
     </div>
     <div class="stat-cell">
-      <div class="stat-num" id="statFree">—</div>
-      <div class="stat-label">Free MB</div>
+      <div class="stat-num" id="statFree" aria-live="polite" aria-label="Ruang bebas megabyte">—</div>
+      <div class="stat-label" aria-hidden="true">Free MB</div>
     </div>
   </div>
 
   <!-- ── CONTROLS ─────────────────────────────────────────────── -->
   <div class="controls">
     <!-- Main action button (Start / Stop) -->
-    <button class="main-btn btn-start" id="mainBtn" onclick="toggleCapture()">
-      <span id="mainBtnIcon">▶</span>
+    <button class="main-btn btn-start" id="mainBtn" onclick="toggleCapture()" aria-label="Mulai atau hentikan capture foto otomatis">
+      <span id="mainBtnIcon" aria-hidden="true">▶</span>
       <span id="mainBtnText">Mulai Capture</span>
     </button>
 
     <!-- Interval & Quality settings -->
     <div class="settings-row">
-      <div class="setting-group">
-        <div class="setting-label">Interval (detik)</div>
+      <div class="setting-group" role="group" aria-labelledby="intervalLabel">
+        <div class="setting-label" id="intervalLabel">Interval (detik)</div>
         <div class="setting-control">
-          <button class="setting-btn" onclick="adjustInterval(-0.5)">−</button>
-          <div class="setting-val" id="intervalDisplay">1.0</div>
-          <button class="setting-btn" onclick="adjustInterval(+0.5)">+</button>
+          <button class="setting-btn" onclick="adjustInterval(-0.5)" aria-label="Kurangi interval capture">−</button>
+          <div class="setting-val" id="intervalDisplay" aria-live="polite" aria-atomic="true">1.0</div>
+          <button class="setting-btn" onclick="adjustInterval(+0.5)" aria-label="Tambah interval capture">+</button>
         </div>
       </div>
-      <div class="setting-group">
-        <div class="setting-label">JPEG Quality</div>
+      <div class="setting-group" role="group" aria-labelledby="qualityLabel">
+        <div class="setting-label" id="qualityLabel">JPEG Quality</div>
         <div class="setting-control">
-          <button class="setting-btn" onclick="adjustQuality(-5)">−</button>
-          <div class="setting-val" id="qualityDisplay">85</div>
-          <button class="setting-btn" onclick="adjustQuality(+5)">+</button>
+          <button class="setting-btn" onclick="adjustQuality(-5)" aria-label="Kurangi kualitas JPEG">−</button>
+          <div class="setting-val" id="qualityDisplay" aria-live="polite" aria-atomic="true">85</div>
+          <button class="setting-btn" onclick="adjustQuality(+5)" aria-label="Tambah kualitas JPEG">+</button>
         </div>
       </div>
     </div>
@@ -604,31 +617,31 @@
   </div>
 
   <!-- ── GALLERY ─────────────────────────────────────────────── -->
-  <div class="gallery-section">
+  <div class="gallery-section" role="region" aria-labelledby="galleryHeading">
     <div class="gallery-header">
-      <span class="gallery-title">Foto Terbaru</span>
-      <span class="gallery-count" id="galleryCount">0 foto</span>
+      <span class="gallery-title" id="galleryHeading">Foto Terbaru</span>
+      <span class="gallery-count" id="galleryCount" aria-live="polite">0 foto</span>
     </div>
-    <div class="gallery-grid" id="galleryGrid">
+    <div class="gallery-grid" id="galleryGrid" role="list" aria-label="Galeri foto yang telah diambil">
       <div class="gallery-empty">Foto akan muncul di sini setelah capture dimulai</div>
     </div>
   </div>
 
   <!-- ── FULLSCREEN VIEWER ──────────────────────────────────── -->
-  <div class="viewer-overlay" id="viewerOverlay" onclick="closeViewer(event)">
-    <button class="viewer-close" onclick="closeViewer()">✕</button>
-    <img class="viewer-img" id="viewerImg" src="" alt="" />
-    <div class="viewer-meta" id="viewerMeta"></div>
-    <button id="btnDeletePhoto" onclick="deleteCurrentPhoto()"
+  <div class="viewer-overlay" id="viewerOverlay" role="dialog" aria-modal="true" aria-labelledby="viewerMeta" onclick="closeViewer(event)">
+    <button class="viewer-close" onclick="closeViewer()" aria-label="Tutup tampilan foto fullscreen">✕</button>
+    <img class="viewer-img" id="viewerImg" src="" alt="Foto yang dipilih dari galeri" />
+    <div class="viewer-meta" id="viewerMeta" aria-live="polite"></div>
+    <button id="btnDeletePhoto" onclick="deleteCurrentPhoto()" aria-label="Hapus foto ini dari perangkat"
             style="margin-top:8px;background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.5);
                    border-radius:8px;color:#ef4444;font-family:inherit;font-size:13px;
                    padding:8px 20px;cursor:pointer;">
-      🗑 Hapus Foto Ini
+      <span aria-hidden="true">🗑</span> Hapus Foto Ini
     </button>
   </div>
 
   <!-- ── TOAST ─────────────────────────────────────────────── -->
-  <div class="toast" id="toast"></div>
+  <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
 <script>
 // ══════════════════════════════════════════════════════════════
@@ -757,9 +770,15 @@ function renderGallery() {
   // Show newest first
   const sorted = [...state.gallery].reverse();
   grid.innerHTML = sorted.map((p, i) => `
-    <div class="gallery-thumb" onclick="openViewer('${p.filename}','${p.timestamp}','${(p.size_kb||0).toFixed(1)}')">
-      <img src="${BASE_URL}/collect/photo/${p.filename}" loading="lazy" alt="Foto ${p.frame_num}" />
-      <div class="gallery-thumb-num">#${p.frame_num}</div>
+    <div class="gallery-thumb" role="listitem">
+      <div role="button" tabindex="0"
+           aria-label="Foto nomor ${p.frame_num}, diambil ${p.timestamp}, ukuran ${(p.size_kb||0).toFixed(1)} KB. Tekan Enter untuk lihat penuh"
+           onclick="openViewer('${p.filename}','${p.timestamp}','${(p.size_kb||0).toFixed(1)}')"
+           onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openViewer('${p.filename}','${p.timestamp}','${(p.size_kb||0).toFixed(1)}')}"
+           style="display:contents;cursor:pointer;">
+        <img src="${BASE_URL}/collect/photo/${p.filename}" loading="lazy" alt="Foto nomor ${p.frame_num}" />
+        <div class="gallery-thumb-num" aria-hidden="true">#${p.frame_num}</div>
+      </div>
     </div>
   `).join('');
 }
@@ -905,18 +924,39 @@ function adjustQuality(delta) {
 // ══════════════════════════════════════════════════════════════
 // VIEWER
 // ══════════════════════════════════════════════════════════════
+let _viewerOpener = null;
 function openViewer(filename, timestamp, sizeKb) {
+  _viewerOpener = document.activeElement;
   state._viewerFile = filename;
   document.getElementById('viewerImg').src          = `${BASE_URL}/collect/photo/${filename}`;
+  document.getElementById('viewerImg').alt          = `Foto ${filename} diambil ${timestamp}`;
   document.getElementById('viewerMeta').textContent = `${filename}  •  ${timestamp}  •  ${sizeKb} KB`;
-  document.getElementById('viewerOverlay').classList.add('open');
+  const overlay = document.getElementById('viewerOverlay');
+  overlay.classList.add('open');
+  // Focus tombol tutup
+  setTimeout(() => document.getElementById('viewerOverlay').querySelector('button')?.focus(), 50);
+  overlay.addEventListener('keydown', _trapFocusViewer);
 }
 
 function closeViewer(e) {
   if (e && e.target !== document.getElementById('viewerOverlay') && e.type !== 'click') return;
-  document.getElementById('viewerOverlay').classList.remove('open');
+  const overlay = document.getElementById('viewerOverlay');
+  overlay.classList.remove('open');
+  overlay.removeEventListener('keydown', _trapFocusViewer);
   document.getElementById('viewerImg').src = '';
   state._viewerFile = null;
+  if (_viewerOpener) { _viewerOpener.focus(); _viewerOpener = null; }
+}
+
+function _trapFocusViewer(e) {
+  if (e.key === 'Escape') { closeViewer(); return; }
+  if (e.key !== 'Tab') return;
+  const overlay = document.getElementById('viewerOverlay');
+  const focusable = [...overlay.querySelectorAll('button:not([disabled])')];
+  if (!focusable.length) return;
+  const first = focusable[0], last = focusable[focusable.length - 1];
+  if (e.shiftKey) { if (document.activeElement === first) { e.preventDefault(); last.focus(); } }
+  else            { if (document.activeElement === last)  { e.preventDefault(); first.focus(); } }
 }
 
 async function deleteCurrentPhoto() {
