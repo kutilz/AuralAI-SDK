@@ -12,6 +12,7 @@ Resource lifecycle
 
 import time
 import base64
+import threading
 
 try:
     from maix import camera, nn, image
@@ -34,7 +35,7 @@ class AIEngine:
         self._detector:     object = None
         self._model_loaded: bool   = False
         self._last_frame:   object = None
-        self._lock = __import__("threading").Lock()
+        self._lock = threading.Lock()
 
         self._init_camera()
         self._init_model()
@@ -223,6 +224,25 @@ class AIEngine:
         except Exception:
             return b""
 
+    def _run_with_progress(self, fn, *args, interval_s: float = 3.0):
+        """
+        Call fn(*args) in the current thread.
+        While waiting, queue 'masih_memproses' audio every interval_s seconds
+        so user knows the device is still working.
+        """
+        stop = threading.Event()
+
+        def _progress():
+            while not stop.wait(timeout=interval_s):
+                self.orch.audio_manager.queue_system("masih_memproses")
+
+        t = threading.Thread(target=_progress, daemon=True)
+        t.start()
+        try:
+            return fn(*args)
+        finally:
+            stop.set()
+
     def trigger_scene_description(self):
         """Capture last frame → AI Vision adapter → queue audio description."""
         frame = self._last_frame
@@ -238,7 +258,9 @@ class AIEngine:
 
         try:
             adapter = self._get_adapter()
-            description = adapter.describe_scene(self._frame_jpeg(), cfg.PROMPT_SCENE)
+            description = self._run_with_progress(
+                adapter.describe_scene, self._frame_jpeg(), cfg.PROMPT_SCENE
+            )
             self.logger.ok(f"Scene: {description}", module="AIEngine")
             self.orch.audio_manager.queue_info(description)
         except AdapterError as e:
@@ -312,7 +334,7 @@ class AIEngine:
     def _qris_online(self, jpeg: bytes):
         try:
             adapter = self._get_adapter()
-            result = adapter.scan_qris(jpeg, cfg.PROMPT_QRIS)
+            result = self._run_with_progress(adapter.scan_qris, jpeg, cfg.PROMPT_QRIS)
             self.logger.ok(f"QRIS(online): {result}", module="AIEngine")
             self.orch.audio_manager.queue_info(result)
             self._save_qris_log(result)
@@ -343,7 +365,7 @@ class AIEngine:
         ai_text = ""
         try:
             adapter = self._get_adapter()
-            ai_text = adapter.scan_qris(jpeg, cfg.PROMPT_QRIS) or ""
+            ai_text = self._run_with_progress(adapter.scan_qris, jpeg, cfg.PROMPT_QRIS) or ""
         except AdapterError as e:
             self.logger.warn(
                 f"QRIS hybrid: AI unavailable, using local only: {e}",
