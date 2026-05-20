@@ -17,11 +17,13 @@ from typing import Callable, Optional
 # or generic HAT @ 0x41/0x36) on /dev/i2c-1 or /dev/i2c-2.
 # One write + read is enough; we don't need a valid response.
 
-_BATTERY_HAT_PRESENT: bool = False
-_BATTERY_I2C_ADDR:    int  = 0x36   # typical fuel-gauge default address
-
 def _probe_i2c_battery() -> bool:
-    import fcntl, struct
+    """
+    Probe I2C bus for a battery gauge IC (INA219 @ 0x40, MAX17043 @ 0x36).
+    Read-only: opens device and reads 1 byte to confirm presence.
+    Call manually via POST /i2c-probe; not called at import time.
+    """
+    import fcntl
     I2C_SLAVE = 0x0703
     candidates = [("/dev/i2c-1", 0x36), ("/dev/i2c-1", 0x40),
                   ("/dev/i2c-2", 0x36), ("/dev/i2c-2", 0x40)]
@@ -37,15 +39,14 @@ def _probe_i2c_battery() -> bool:
             continue
     return False
 
-try:
-    _BATTERY_HAT_PRESENT = _probe_i2c_battery()
-except Exception:
-    _BATTERY_HAT_PRESENT = False
-
 
 def battery_hat_present() -> bool:
-    """True if an I2C battery HAT was detected at startup."""
-    return _BATTERY_HAT_PRESENT
+    """True if I2C battery HAT was enabled via /i2c-probe endpoint."""
+    try:
+        from config import cfg as _cfg
+        return _cfg.I2C_BATTERY_ENABLED
+    except Exception:
+        return False
 
 
 def battery_info() -> dict:

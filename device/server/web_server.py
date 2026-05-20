@@ -289,6 +289,8 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             self._serve_auth_token()
         elif path == "/presets":
             self._serve_presets()
+        elif path == "/i2c-probe":
+            self._serve_i2c_probe_status()
         else:
             self._send_404()
 
@@ -337,6 +339,8 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             self._handle_ai_settings_secure()
         elif path == "/presets/apply":
             self._handle_preset_apply()
+        elif path == "/i2c-probe":
+            self._handle_i2c_probe()
         else:
             self._send_404()
 
@@ -661,6 +665,33 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             self._send_json(list_presets())
         except Exception as e:
             self._send_error(e, context="presets list")
+
+    # ─── I2C probe endpoints (W-2) ────────────────────────────────────────────
+
+    def _serve_i2c_probe_status(self):
+        from config import cfg as _cfg
+        self._send_json({
+            "i2c_battery_enabled": _cfg.I2C_BATTERY_ENABLED,
+            "note": "POST /i2c-probe {\"action\":\"probe\"} to run probe, {\"action\":\"disable\"} to disable",
+        })
+
+    def _handle_i2c_probe(self):
+        if not self._auth_ok():
+            return
+        body = self._read_body_json() or {}
+        action = body.get("action", "probe")
+        from config import cfg as _cfg
+        if action == "disable":
+            _cfg.update({"i2c_battery_enabled": False})
+            self._send_json({"ok": True, "i2c_battery_enabled": False})
+        else:
+            try:
+                from utils.health import _probe_i2c_battery
+                found = _probe_i2c_battery()
+            except Exception:
+                found = False
+            _cfg.update({"i2c_battery_enabled": found})
+            self._send_json({"ok": True, "found": found, "i2c_battery_enabled": found})
 
     # ─── AI Settings endpoints ─────────────────────────────────────────────────
 
