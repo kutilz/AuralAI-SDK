@@ -279,11 +279,23 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             self._serve_ai_settings()
         elif path == "/config":
             self._serve_config()
+        elif path == "/auth/required":
+            from config import cfg as _cfg
+            self._send_json({
+                "auth_required":   _cfg.AUTH_REQUIRED,
+                "autosave":        _cfg.AUTOSAVE_ENABLED,
+            })
+        elif path == "/auth/token":
+            self._serve_auth_token()
+        elif path == "/presets":
+            self._serve_presets()
         else:
             self._send_404()
 
     def do_POST(self):
         path = self.path.split("?")[0]
+        if not self._require_auth(path):
+            return
 
         if path == "/command":
             self._handle_command()
@@ -321,6 +333,10 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             self._handle_ai_settings_save()
         elif path == "/ai-settings/test":
             self._handle_ai_settings_test()
+        elif path == "/ai-settings/secure":
+            self._handle_ai_settings_secure()
+        elif path == "/presets/apply":
+            self._handle_preset_apply()
         else:
             self._send_404()
 
@@ -329,10 +345,64 @@ class AuralAIHandler(BaseHTTPRequestHandler):
         self._set_cors_headers()
         self.end_headers()
 
+    # ─── CORS / auth (CG-4) ────────────────────────────────────────────────────
+
+    # POST paths that require token auth. Other POSTs and all GETs stay open.
+    _AUTH_REQUIRED_POSTS = {
+        "/command",
+        "/config",
+        "/ai-settings",
+        "/ai-settings/test",
+        "/ai-settings/secure",
+        "/benchmark/run", "/benchmark/stop",
+        "/stress/start",  "/stress/stop",
+        "/suite/start",   "/suite/stop", "/suite/report-only",
+        "/collect/start", "/collect/stop", "/collect/delete",
+        "/presets/apply",
+    }
+
     def _set_cors_headers(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
+        from config import cfg as _cfg
+        origins = _cfg.CORS_ALLOWED_ORIGINS
+        req_origin = self.headers.get("Origin", "")
+        if "*" in origins:
+            allow = "*"
+        elif req_origin and req_origin in origins:
+            allow = req_origin
+        elif origins:
+            allow = origins[0]
+        else:
+            allow = "null"
+        self.send_header("Access-Control-Allow-Origin", allow)
+        self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers",
+                         "Content-Type, X-Auth-Token")
+
+    def _auth_ok(self) -> bool:
+        from config import cfg as _cfg
+        if not _cfg.AUTH_REQUIRED:
+            return True
+        from utils.auth import verify
+        token = self.headers.get("X-Auth-Token", "")
+        if not token:
+            q = self.path.split("?", 1)
+            if len(q) == 2:
+                for kv in q[1].split("&"):
+                    if kv.startswith("token="):
+                        token = kv[6:]
+                        break
+        return verify(token)
+
+    def _require_auth(self, path: str) -> bool:
+        if path not in self._AUTH_REQUIRED_POSTS:
+            return True
+        if self._auth_ok():
+            return True
+        self._send_json(
+            {"error": "unauthorized", "hint": "X-Auth-Token required"}, 401,
+        )
+        return False
 
     # ─── Core endpoints ────────────────────────────────────────────────────────
 
@@ -563,7 +633,34 @@ class AuralAIHandler(BaseHTTPRequestHandler):
 
     def _serve_config(self):
         from config import cfg
-        self._send_json(cfg.as_dict())
+        data = cfg.as_dict()
+        # Don't leak secrets via /config — mask keys + token
+        for k in ("openai_api_key", "gemini_api_key", "claude_api_key", "device_token"):
+            if data.get(k):
+                v = data[k]
+                data[k] = "***" + v[-4:] if len(v) > 4 else "****"
+        self._send_json(data)
+
+    def _serve_auth_token(self):
+        """
+        Return the device token. Localhost-only — so the dashboard served
+        from the device itself can pre-fill its auth header. Remote
+        clients must read /root/config.json directly (SSH) and paste in.
+        """
+        peer = self.client_address[0] if self.client_address else ""
+        if peer not in ("127.0.0.1", "::1", "localhost"):
+            self._send_json({"error": "localhost only"}, 403)
+            return
+        from utils.auth import get_token, ensure_token
+        token = get_token() or ensure_token(self.logger)
+        self._send_json({"token": token})
+
+    def _serve_presets(self):
+        try:
+            from utils.presets import list_presets
+            self._send_json(list_presets())
+        except Exception as e:
+            self._send_error(e, context="presets list")
 
     # ─── AI Settings endpoints ─────────────────────────────────────────────────
 
@@ -577,20 +674,39 @@ class AuralAIHandler(BaseHTTPRequestHandler):
                 return ""
             return "***" + v[-4:] if len(v) > 4 else "****"
 
+        def _has(provider: str) -> bool:
+            return bool(
+                data.get(f"{provider}_api_key")
+                or data.get(f"{provider}_api_key_enc")
+            )
+
+        def _enc_status(provider: str) -> str:
+            if data.get(f"{provider}_api_key_enc"):
+                return "encrypted"
+            if data.get(f"{provider}_api_key"):
+                return "plaintext"
+            return "unset"
+
         self._send_json({
             "ai_provider":   data.get("ai_provider", "openai"),
             "ai_timeout_s":  data.get("ai_timeout_s", 15),
             "openai_model":  data.get("openai_model", "gpt-4o-mini"),
-            "openai_key_set": bool(data.get("openai_api_key")),
+            "openai_key_set":  _has("openai"),
             "openai_key_hint": _masked("openai_api_key"),
+            "openai_key_status": _enc_status("openai"),
             "gemini_model":  data.get("gemini_model", "gemini-1.5-flash"),
-            "gemini_key_set": bool(data.get("gemini_api_key")),
+            "gemini_key_set":  _has("gemini"),
             "gemini_key_hint": _masked("gemini_api_key"),
+            "gemini_key_status": _enc_status("gemini"),
             "claude_model":  data.get("claude_model", "claude-haiku-4-5-20251001"),
-            "claude_key_set": bool(data.get("claude_api_key")),
+            "claude_key_set":  _has("claude"),
             "claude_key_hint": _masked("claude_api_key"),
+            "claude_key_status": _enc_status("claude"),
             "prompt_scene":  data.get("prompt_scene", ""),
             "prompt_qris":   data.get("prompt_qris", ""),
+            "keys_locked":   bool(data.get("api_keys_locked")),
+            "qris_mode":     data.get("qris_mode", "hybrid"),
+            "autosave":      bool(data.get("autosave_enabled", True)),
         })
 
     def _handle_ai_settings_save(self):
@@ -599,7 +715,6 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             body   = json.loads(self.rfile.read(length)) if length else {}
             from config import cfg
 
-            # Only accept known AI-settings keys
             allowed = {
                 "ai_provider", "ai_timeout_s",
                 "openai_api_key", "openai_model",
@@ -608,18 +723,100 @@ class AuralAIHandler(BaseHTTPRequestHandler):
                 "prompt_scene",   "prompt_qris",
             }
             payload = {k: v for k, v in body.items() if k in allowed}
-            # Ignore empty strings for secret keys (UI sends "" when unchanged)
             for key in ("openai_api_key", "gemini_api_key", "claude_api_key"):
-                if payload.get(key) == "" or payload.get(key) == "****":
+                if payload.get(key) in ("", "****", None):
                     payload.pop(key, None)
+
+            # Refuse plaintext key overwrite when locked.
+            if cfg.API_KEYS_LOCKED:
+                blocked = [k for k in list(payload.keys()) if k.endswith("_api_key")]
+                for k in blocked:
+                    payload.pop(k, None)
+                if blocked:
+                    self.logger.warn(
+                        f"API key edit refused (locked): {blocked}",
+                        module="WebServer",
+                    )
 
             cfg.update(payload)
             self.logger.info(
                 f"AI settings saved: {[k for k in payload if 'key' not in k]}"
             )
-            self._send_json({"ok": True, "applied": list(payload.keys())})
+            self._send_json({
+                "ok":          True,
+                "applied":     list(payload.keys()),
+                "keys_locked": cfg.API_KEYS_LOCKED,
+            })
         except Exception as e:
             self._send_error(e)
+
+    def _handle_ai_settings_secure(self):
+        """
+        Store an API key in encrypted form. Body:
+            {"provider": "openai|gemini|claude", "api_key": "<plain>"}
+        Optionally {"lock": true|false} to toggle api_keys_locked.
+
+        When locked, this endpoint also rejects writes — operator must
+        run tools/unlock_keys.py on the device console to clear the lock.
+        """
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body   = json.loads(self.rfile.read(length)) if length else {}
+            from config import cfg
+            from utils.secure_keys import encrypt
+
+            if cfg.API_KEYS_LOCKED:
+                self._send_json({
+                    "ok":    False,
+                    "error": "api_keys_locked",
+                    "hint":  "Run tools/unlock_keys.py on device console to clear lock.",
+                }, 403)
+                return
+
+            applied = {}
+            provider = body.get("provider")
+            api_key  = body.get("api_key", "")
+            if provider in ("openai", "gemini", "claude") and api_key:
+                applied[f"{provider}_api_key_enc"] = encrypt(api_key)
+                applied[f"{provider}_api_key"]     = ""  # clear any plaintext
+            if "lock" in body:
+                applied["api_keys_locked"] = bool(body["lock"])
+
+            if not applied:
+                self._send_json({"ok": False, "error": "no-op"}, 400)
+                return
+
+            cfg.update(applied)
+            self.logger.warn(
+                f"Secure-key update: provider={provider} lock={applied.get('api_keys_locked')}",
+                module="WebServer",
+            )
+            self._send_json({
+                "ok":          True,
+                "keys_locked": cfg.API_KEYS_LOCKED,
+                "applied":     [k for k in applied if "api_key" not in k or "locked" in k],
+            })
+        except Exception as e:
+            self._send_error(e)
+
+    def _handle_preset_apply(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body   = json.loads(self.rfile.read(length)) if length else {}
+            mode   = body.get("mode", "")
+            name   = body.get("name", "")
+            from utils.presets import apply_preset
+            applied = apply_preset(mode, name)
+            if not applied:
+                self._send_json({"ok": False, "error": "unknown preset"}, 404)
+                return
+            self.logger.info(
+                f"Preset applied: {mode}/{name} -> {list(applied.keys())}",
+                module="WebServer",
+            )
+            self._send_json({"ok": True, "mode": mode, "name": name, "applied": applied})
+        except Exception as e:
+            self._send_error(e, context="preset apply")
 
     def _handle_ai_settings_test(self):
         try:
@@ -669,6 +866,14 @@ class WebServer:
         self.data_collector = data_collector
 
     def start(self):
+        # Ensure device token exists before serving any request (CG-4)
+        try:
+            from utils.auth import ensure_token
+            ensure_token(self.logger)
+        except Exception as e:
+            self.logger.exception(
+                f"Auth token init failed: {e}", module="WebServer", exc=e,
+            )
         handler = partial(AuralAIHandler, self.orch, self.logger, self.data_collector)
         server  = HTTPServer((self.host, self.port), handler)
         self.logger.ok(f"Web server listening on {self.host}:{self.port}")

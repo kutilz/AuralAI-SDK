@@ -58,6 +58,22 @@ _DEFAULTS: dict = {
     "button_pin_mode":          -1,
     # Speaker volume (0-100); read by AudioManager on every play
     "audio_volume":             80,
+    # Auth: device token (auto-generated on first boot if empty)
+    "device_token":             "",
+    # CORS: list of allowed origins for dashboard. Empty list = same-origin only.
+    # Use ["*"] for wide-open (NOT recommended for pilot).
+    "cors_allowed_origins":     ["*"],
+    # Auth: require token on POST mutate endpoints (False = legacy/dev-only)
+    "auth_required":            True,
+    # Settings autosave (UI hint; backend always persists immediately)
+    "autosave_enabled":         True,
+    # QRIS verification mode: "online" | "offline" | "hybrid"
+    "qris_mode":                "hybrid",
+    # Maximum acceptable QRIS nominal in IDR before requiring extra confirm
+    "qris_nominal_warn_cap":    1_000_000,
+    # API key encryption lock — when True, web UI cannot overwrite
+    # encrypted keys. Unlock procedure: tools/unlock_keys.py on device.
+    "api_keys_locked":          False,
 }
 
 
@@ -187,6 +203,13 @@ class Config:
 
     @property
     def OPENAI_API_KEY(self) -> str:
+        try:
+            from utils.secure_keys import read_secret
+            v = read_secret(self, "openai_api_key", "OPENAI_API_KEY")
+            if v:
+                return v
+        except Exception:
+            pass
         return os.environ.get("OPENAI_API_KEY") or self.get("openai_api_key", "")
 
     @property
@@ -199,6 +222,13 @@ class Config:
 
     @property
     def GEMINI_API_KEY(self) -> str:
+        try:
+            from utils.secure_keys import read_secret
+            v = read_secret(self, "gemini_api_key", "GEMINI_API_KEY")
+            if v:
+                return v
+        except Exception:
+            pass
         return os.environ.get("GEMINI_API_KEY") or self.get("gemini_api_key", "")
 
     @property
@@ -207,6 +237,13 @@ class Config:
 
     @property
     def CLAUDE_API_KEY(self) -> str:
+        try:
+            from utils.secure_keys import read_secret
+            v = read_secret(self, "claude_api_key", "ANTHROPIC_API_KEY")
+            if v:
+                return v
+        except Exception:
+            pass
         return os.environ.get("ANTHROPIC_API_KEY") or self.get("claude_api_key", "")
 
     @property
@@ -248,6 +285,32 @@ class Config:
     @property
     def PROMPT_QRIS(self) -> str:
         return self.get("prompt_qris", _DEFAULTS["prompt_qris"])
+
+    @property
+    def AUTH_REQUIRED(self) -> bool:
+        return bool(self.get("auth_required", True))
+
+    @property
+    def CORS_ALLOWED_ORIGINS(self) -> list:
+        v = self.get("cors_allowed_origins", ["*"])
+        return v if isinstance(v, list) else [str(v)]
+
+    @property
+    def AUTOSAVE_ENABLED(self) -> bool:
+        return bool(self.get("autosave_enabled", True))
+
+    @property
+    def QRIS_MODE(self) -> str:
+        m = self.get("qris_mode", "hybrid")
+        return m if m in ("online", "offline", "hybrid") else "hybrid"
+
+    @property
+    def QRIS_NOMINAL_WARN_CAP(self) -> int:
+        return int(self.get("qris_nominal_warn_cap", 1_000_000))
+
+    @property
+    def API_KEYS_LOCKED(self) -> bool:
+        return bool(self.get("api_keys_locked", False))
 
 
 # ─── Singleton ────────────────────────────────────────────────────────────────

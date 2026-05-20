@@ -161,13 +161,31 @@ class AudioManager:
 
     def _ensure_pcm(self, wav_path: str) -> Optional[str]:
         """Convert WAV → PCM s16le 48 kHz mono; result cached next to source."""
+        import subprocess
         pcm = os.path.splitext(wav_path)[0] + ".pcm"
         if os.path.exists(pcm):
             return pcm
-        ret = os.system(
-            f"ffmpeg -v warning -y -i '{wav_path}' "
-            f"-f s16le -acodec pcm_s16le -ar {_PCM_RATE} -ac 1 '{pcm}'"
-        )
+        # W-1: list-args + shell=False — no command injection surface.
+        try:
+            ret = subprocess.run(
+                [
+                    "ffmpeg", "-v", "warning", "-y",
+                    "-i", wav_path,
+                    "-f", "s16le", "-acodec", "pcm_s16le",
+                    "-ar", str(_PCM_RATE), "-ac", "1", pcm,
+                ],
+                shell=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            ).returncode
+        except (OSError, subprocess.SubprocessError) as e:
+            self.logger.exception(
+                f"ffmpeg invoke failed for {wav_path}: {e}",
+                module="AudioMgr", exc=e,
+            )
+            return None
         return pcm if ret == 0 and os.path.exists(pcm) else None
 
     @property
