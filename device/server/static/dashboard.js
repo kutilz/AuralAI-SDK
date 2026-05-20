@@ -453,8 +453,9 @@ function colorizeLatency(id, val, warnThresh, errThresh) {
 }
 
 // ── Audio Display ──────────────────────────────────────────────────────────────
-// Device memainkan audio via speaker fisik; dashboard hanya menampilkan teks
-// sebagai visual log — tidak ada browser audio.
+// OPERATOR/DEV VIEW: Dashboard ini untuk operator dan pengembang, bukan pengguna tunanetra.
+// Audio dikeluarkan melalui speaker fisik MaixCAM — tidak ada audio di browser.
+// Teks di bawah hanya log visual dari apa yang sedang diputar di device.
 let _audioTimer = null;
 
 function showAudioText(text) {
@@ -1076,12 +1077,6 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('overlayToggle').addEventListener('change', e => {
     state.overlayVisible = e.target.checked;
   });
-
-  // Preload voices untuk Web Speech
-  if ('speechSynthesis' in window) {
-    window.speechSynthesis.getVoices();
-    window.speechSynthesis.addEventListener('voiceschanged', () => window.speechSynthesis.getVoices());
-  }
 
   // Start polling
   setStatus('connecting', 'Connecting...');
