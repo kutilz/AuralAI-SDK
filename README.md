@@ -7,13 +7,13 @@
 
 ## Fitur
 
-| Phase  | Fitur                                                        | Status                                  |
-| ------ | ------------------------------------------------------------ | --------------------------------------- |
-| **0**  | Web Dashboard, Camera Preview, Log Stream                    | ✅ Ready                                 |
-| **0b** | Companion PC (MaixCAM + Flask, MVP teruji)                   | ✅ `companion/` + `device/aural_maix.py` |
-| **1**  | Object Detection (YOLO11n COCO), Audio Output, AI Focus Mode | 🔧 In Progress                          |
-| **2**  | Scene Description (OpenAI Vision), QRIS Verifier             | 📋 Planned                              |
-| **3**  | Custom Model Pipeline, Dataset Capture Tool                  | 📋 Planned                              |
+| Phase  | Fitur                                                                         | Status                                  |
+| ------ | ----------------------------------------------------------------------------- | --------------------------------------- |
+| **0**  | Web Dashboard, Camera Preview, Log Stream                                     | ✅ Ready                                 |
+| **0b** | Companion PC (MaixCAM + Flask, MVP teruji)                                    | ✅ `companion/` + `device/aural_maix.py` |
+| **1**  | Object Detection (YOLO11n COCO), Audio Output, Explorer Mode                  | ✅ Ready                                 |
+| **2**  | Scene Description (AI Vision), QRIS Verifier, Token Auth, Presets             | ✅ Ready                                 |
+| **3**  | TTS Hybrid, Log Rotation, Benchmark Suite, Data Collection, Audio Progress    | ✅ Ready                                 |
 
 ---
 
