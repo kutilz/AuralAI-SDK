@@ -523,6 +523,15 @@
         <button class="bench-close" onclick="closeAISettings()" aria-label="Tutup pengaturan AI">✕</button>
       </div>
 
+      <!-- Top status strip: autosave + lock -->
+      <div class="ai-top-strip" role="region" aria-label="Status setelan">
+        <label class="ai-toggle" title="Auto-save setiap perubahan disimpan ke device. Matikan untuk save manual.">
+          <input type="checkbox" id="autosaveSwitch" onchange="toggleAutosave()" checked />
+          <span>Autosave</span>
+        </label>
+        <span class="ai-lock-badge" id="aiKeysLockBadge" onclick="aiSettingsLockToggle()" title="Klik untuk lock/unlock procedure">🔓</span>
+      </div>
+
       <!-- Tab navigation -->
       <div class="bench-tabs" role="tablist" aria-label="Pilih kategori pengaturan" style="border-top:1px solid var(--border);">
         <button class="bench-tab active" id="aiTabAI" role="tab" aria-selected="true" aria-controls="aiPanelAI" onclick="switchAITab('ai')">
@@ -530,6 +539,9 @@
         </button>
         <button class="bench-tab" id="aiTabHardware" role="tab" aria-selected="false" aria-controls="aiPanelHardware" onclick="switchAITab('hardware')">
           <span class="bench-tab-icon" aria-hidden="true">⚙</span> Hardware
+        </button>
+        <button class="bench-tab" id="aiTabPresets" role="tab" aria-selected="false" aria-controls="aiPanelPresets" onclick="switchAITab('presets')">
+          <span class="bench-tab-icon" aria-hidden="true">⚡</span> Presets
         </button>
       </div>
 
@@ -564,6 +576,11 @@
             <span class="ai-key-hint" id="openaiKeyHint"></span>
           </div>
           <div class="ai-set-row">
+            <label class="ai-set-label">Status</label>
+            <span class="ai-key-status" id="openaiKeyStatus">—</span>
+            <button class="bench-btn ai-encrypt-btn" onclick="aiSettingsEncryptKey('openai')" title="Enkripsi key di atas dan simpan ke device">🔒 Enkripsi &amp; Simpan</button>
+          </div>
+          <div class="ai-set-row">
             <label class="ai-set-label">Model</label>
             <select class="ai-set-select" id="openaiModel">
               <option value="gpt-4o-mini">gpt-4o-mini</option>
@@ -583,6 +600,11 @@
             <span class="ai-key-hint" id="geminiKeyHint"></span>
           </div>
           <div class="ai-set-row">
+            <label class="ai-set-label">Status</label>
+            <span class="ai-key-status" id="geminiKeyStatus">—</span>
+            <button class="bench-btn ai-encrypt-btn" onclick="aiSettingsEncryptKey('gemini')" title="Enkripsi key di atas dan simpan ke device">🔒 Enkripsi &amp; Simpan</button>
+          </div>
+          <div class="ai-set-row">
             <label class="ai-set-label">Model</label>
             <select class="ai-set-select" id="geminiModel">
               <option value="gemini-1.5-flash">gemini-1.5-flash</option>
@@ -600,6 +622,11 @@
             <input class="ai-set-input" type="password" id="claudeKey"
                    placeholder="sk-ant-… (kosong = tidak diubah)" autocomplete="off" />
             <span class="ai-key-hint" id="claudeKeyHint"></span>
+          </div>
+          <div class="ai-set-row">
+            <label class="ai-set-label">Status</label>
+            <span class="ai-key-status" id="claudeKeyStatus">—</span>
+            <button class="bench-btn ai-encrypt-btn" onclick="aiSettingsEncryptKey('claude')" title="Enkripsi key di atas dan simpan ke device">🔒 Enkripsi &amp; Simpan</button>
           </div>
           <div class="ai-set-row">
             <label class="ai-set-label">Model</label>
@@ -664,6 +691,48 @@
         </div>
       </div><!-- end #aiPanelHardware -->
 
+      <!-- ── TAB: Presets ──────────────────────── -->
+      <div id="aiPanelPresets" role="tabpanel" aria-labelledby="aiTabPresets" style="display:none;">
+        <p style="color:var(--text3);font-size:12px;margin:4px 0 14px;">
+          Pilih preset untuk tuning cepat. Klik "Apply" — nilai akan diterapkan ke config secara langsung.
+        </p>
+
+        <div class="ai-sec-title">Explorer (YOLO)</div>
+        <div class="ai-set-row">
+          <label class="ai-set-label" for="preset_explorer">Preset</label>
+          <select class="ai-set-select" id="preset_explorer">
+            <option value="">— pilih preset —</option>
+          </select>
+          <button class="bench-btn" onclick="applyPreset('explorer')">Apply</button>
+        </div>
+
+        <div class="ai-sec-title" style="margin-top:14px;">Scene Description</div>
+        <div class="ai-set-row">
+          <label class="ai-set-label" for="preset_scene">Preset</label>
+          <select class="ai-set-select" id="preset_scene">
+            <option value="">— pilih preset —</option>
+          </select>
+          <button class="bench-btn" onclick="applyPreset('scene')">Apply</button>
+        </div>
+
+        <div class="ai-sec-title" style="margin-top:14px;">QRIS</div>
+        <div class="ai-set-row">
+          <label class="ai-set-label" for="qrisModeSel">Mode</label>
+          <select class="ai-set-select" id="qrisModeSel">
+            <option value="online">Online (AI Vision)</option>
+            <option value="offline">Offline (decoder lokal)</option>
+            <option value="hybrid" selected>Hybrid (rekomendasi)</option>
+          </select>
+        </div>
+        <div class="ai-set-row">
+          <label class="ai-set-label" for="preset_qris">Preset</label>
+          <select class="ai-set-select" id="preset_qris">
+            <option value="">— pilih preset —</option>
+          </select>
+          <button class="bench-btn" onclick="applyPreset('qris')">Apply</button>
+        </div>
+      </div><!-- end #aiPanelPresets -->
+
         <!-- Footer buttons -->
         <div class="ai-set-footer">
           <button class="bench-btn" id="btnAITest" onclick="aiSettingsTest()" aria-label="Test koneksi ke AI provider yang dipilih">
@@ -672,8 +741,8 @@
           <span class="ai-test-result" id="aiTestResult" role="status" aria-live="polite"></span>
           <div style="flex:1"></div>
           <button class="bench-btn" onclick="closeAISettings()" aria-label="Batal dan tutup pengaturan">Batal</button>
-          <button class="bench-btn bench-btn-primary" onclick="aiSettingsSave()" aria-label="Simpan pengaturan AI">
-            <span aria-hidden="true">💾</span> Simpan
+          <button class="bench-btn bench-btn-primary" id="btnAISave" onclick="aiSettingsSave()" aria-label="Simpan pengaturan AI">
+            <span aria-hidden="true">💾</span> Simpan Settings
           </button>
         </div>
 

@@ -30,7 +30,62 @@ const state = {
   tick:           0,
   _lastAudioText: '',
   _seenLogLines:  new Set(),
+  // Auth / settings flags
+  authToken:      localStorage.getItem('aural_token') || '',
+  authRequired:   true,
+  autosave:       true,
+  keysLocked:     false,
+  presets:        {},        // populated by GET /presets
+  _dirty:         false,     // any unsaved settings change pending
 };
+
+// ── Authenticated fetch wrapper ─────────────────────────────────────────────
+// All POSTs that mutate state must carry X-Auth-Token. We try to grab the
+// token from localhost endpoint on first load; if 403 the user pastes it.
+async function apiFetch(url, opts = {}) {
+  opts = { ...opts };
+  opts.headers = { ...(opts.headers || {}) };
+  if (state.authToken) opts.headers['X-Auth-Token'] = state.authToken;
+  const r = await fetch(url, opts);
+  if (r.status === 401) {
+    // Prompt once for token entry; cache result.
+    const entered = window.prompt(
+      'Device auth required. Paste X-Auth-Token ' +
+      '(from /root/config.json device_token field):'
+    );
+    if (entered) {
+      state.authToken = entered.trim();
+      localStorage.setItem('aural_token', state.authToken);
+      opts.headers['X-Auth-Token'] = state.authToken;
+      return fetch(url, opts);
+    }
+  }
+  return r;
+}
+
+async function initAuth() {
+  try {
+    const r = await fetch('/auth/required');
+    if (r.ok) {
+      const d = await r.json();
+      state.authRequired = !!d.auth_required;
+      state.autosave     = d.autosave !== false;
+    }
+  } catch (_) {}
+  if (!state.authToken && state.authRequired) {
+    // try localhost endpoint — only works when serving from device itself
+    try {
+      const r = await fetch('/auth/token');
+      if (r.ok) {
+        const d = await r.json();
+        if (d.token) {
+          state.authToken = d.token;
+          localStorage.setItem('aural_token', state.authToken);
+        }
+      }
+    } catch (_) {}
+  }
+}
 
 // ── Canvas (overlay di atas camera img) ────────────────────────────────────────
 let canvas, ctx;
@@ -314,7 +369,7 @@ async function pollHealth() {
 
 async function sendCommand(cmd, extra = {}) {
   try {
-    const res  = await fetch(`${DEVICE_URL}/command`, {
+    const res  = await apiFetch(`${DEVICE_URL}/command`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ cmd, ...extra }),
@@ -656,7 +711,7 @@ async function _benchStart(section) {
   document.getElementById('benchProgressLabel').textContent = 'Mengirim perintah...';
 
   try {
-    const res  = await fetch(`${DEVICE_URL}/benchmark/run`, {
+    const res  = await apiFetch(`${DEVICE_URL}/benchmark/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(section !== null ? { section } : {}),
@@ -892,7 +947,7 @@ function stressRenderHistory() {
 async function stressStart() {
   const hours = parseFloat(document.getElementById('stressDuration').value) || 3;
   try {
-    const res  = await fetch(`${DEVICE_URL}/stress/start`, {
+    const res  = await apiFetch(`${DEVICE_URL}/stress/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ hours }),
@@ -912,7 +967,7 @@ async function stressStart() {
 
 async function stressStop() {
   try {
-    const res  = await fetch(`${DEVICE_URL}/stress/stop`, { method: 'POST' });
+    const res  = await apiFetch(`${DEVICE_URL}/stress/stop`, { method: 'POST' });
     const data = await res.json();
     log('info', `Stress stop: ${data.message}`);
   } catch (e) {
@@ -1010,8 +1065,10 @@ document.addEventListener('keydown', e => {
 
 // ── Init ────────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  // Hapus mock banner
   document.getElementById('mockBanner')?.remove();
+
+  // Auth bootstrap (best-effort — non-blocking)
+  initAuth().catch(() => {});
 
   initCanvas();
   startCameraFeed();
@@ -1061,13 +1118,18 @@ function openAISettings() {
 
 function switchAITab(tab) {
   _aiCurrentTab = tab;
-  document.getElementById('aiPanelAI').style.display       = tab === 'ai'       ? '' : 'none';
-  document.getElementById('aiPanelHardware').style.display = tab === 'hardware' ? '' : 'none';
-  ['aiTabAI','aiTabHardware'].forEach(id => {
+  const panels = { ai: 'aiPanelAI', hardware: 'aiPanelHardware', presets: 'aiPanelPresets' };
+  const tabs   = { ai: 'aiTabAI',   hardware: 'aiTabHardware',   presets: 'aiTabPresets'   };
+  Object.entries(panels).forEach(([k, id]) => {
     const el = document.getElementById(id);
-    const isActive = (id === 'aiTabAI' && tab === 'ai') || (id === 'aiTabHardware' && tab === 'hardware');
-    el.classList.toggle('active', isActive);
-    el.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    if (el) el.style.display = (tab === k) ? '' : 'none';
+  });
+  Object.entries(tabs).forEach(([k, id]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const active = (tab === k);
+    el.classList.toggle('active', active);
+    el.setAttribute('aria-selected', active ? 'true' : 'false');
   });
 }
 
@@ -1103,12 +1165,14 @@ function selectProvider(p) {
 
 async function aiSettingsLoad() {
   try {
-    const [rAI, rCfg] = await Promise.all([
+    const [rAI, rCfg, rPresets] = await Promise.all([
       fetch('/ai-settings'),
       fetch('/config'),
+      fetch('/presets'),
     ]);
     const d   = await rAI.json();
     const cfg = rCfg.ok ? await rCfg.json() : {};
+    state.presets = rPresets.ok ? await rPresets.json() : {};
 
     // AI Vision tab
     selectProvider(d.ai_provider || 'openai');
@@ -1125,6 +1189,15 @@ async function aiSettingsLoad() {
       document.getElementById(id).value = ''
     );
 
+    // Encryption / lock status
+    state.keysLocked = !!d.keys_locked;
+    state.autosave   = d.autosave !== false;
+    _renderKeyStatus(d);
+    _renderLockBadge();
+    _renderAutosave();
+    _renderPresetDropdowns();
+    _renderQrisMode(d.qris_mode || 'hybrid');
+
     // Hardware tab
     const conf = cfg.conf_threshold ?? 0.5;
     const vol  = cfg.audio_volume   ?? 80;
@@ -1133,20 +1206,198 @@ async function aiSettingsLoad() {
     document.getElementById('hwVolume').value        = vol;
     document.getElementById('hwVolumeSlider').value  = vol;
 
-    // Keep number inputs and sliders in sync when user types
     document.getElementById('hwConfThreshold').oninput = function() {
       document.getElementById('hwConfSlider').value = this.value;
+      _markDirty();
     };
     document.getElementById('hwVolume').oninput = function() {
       document.getElementById('hwVolumeSlider').value = this.value;
+      _markDirty();
     };
+    // Bind dirty tracking on every form input
+    document.querySelectorAll('#aiSettingsModal input, #aiSettingsModal textarea, #aiSettingsModal select')
+      .forEach(el => el.addEventListener('input', _markDirty));
+
+    state._dirty = false;
+    _refreshSaveBtnVisibility();
   } catch(e) {
     log('err', `Gagal load AI settings: ${e}`);
   }
 }
 
-async function aiSettingsSave() {
-  // AI Vision payload
+function _renderKeyStatus(d) {
+  ['openai','gemini','claude'].forEach(p => {
+    const el = document.getElementById(`${p}KeyStatus`);
+    if (!el) return;
+    const s = d[`${p}_key_status`] || 'unset';
+    const label = s === 'encrypted' ? '🔒 terenkripsi' :
+                  s === 'plaintext' ? '⚠ plaintext'    :
+                                      '— belum diset';
+    el.textContent = label;
+    el.className   = `ai-key-status ai-key-status-${s}`;
+  });
+}
+
+function _renderLockBadge() {
+  const el = document.getElementById('aiKeysLockBadge');
+  if (!el) return;
+  if (state.keysLocked) {
+    el.textContent = '🔒 API keys LOCKED';
+    el.className   = 'ai-lock-badge locked';
+    el.title       = 'Web UI tidak bisa overwrite. Jalankan tools/unlock_keys.py di device console untuk unlock.';
+  } else {
+    el.textContent = '🔓 API keys unlocked';
+    el.className   = 'ai-lock-badge';
+    el.title       = 'Web UI dapat menulis ulang API keys.';
+  }
+}
+
+function _renderAutosave() {
+  const sw = document.getElementById('autosaveSwitch');
+  if (sw) sw.checked = !!state.autosave;
+  _refreshSaveBtnVisibility();
+}
+
+function _refreshSaveBtnVisibility() {
+  const btn = document.getElementById('btnAISave');
+  if (!btn) return;
+  if (state.autosave) {
+    btn.style.display = state._dirty ? '' : 'none';
+    btn.textContent   = 'Sinkronisasi…';
+  } else {
+    btn.style.display = '';
+    btn.textContent   = state._dirty ? 'Simpan (perubahan belum disimpan)' : 'Simpan Settings';
+  }
+}
+
+function _markDirty() {
+  state._dirty = true;
+  _refreshSaveBtnVisibility();
+  if (state.autosave) {
+    _scheduleAutosave();
+  }
+}
+
+let _autosaveTimer = null;
+function _scheduleAutosave() {
+  if (_autosaveTimer) clearTimeout(_autosaveTimer);
+  _autosaveTimer = setTimeout(() => { aiSettingsSave({ silent: true }); }, 500);
+}
+
+function _renderPresetDropdowns() {
+  ['explorer','scene','qris'].forEach(mode => {
+    const sel = document.getElementById(`preset_${mode}`);
+    if (!sel) return;
+    const opts = (state.presets[mode] || []);
+    sel.innerHTML = '<option value="">— pilih preset —</option>' +
+      opts.map(o => `<option value="${o.name}" title="${o.desc}">${o.label}</option>`).join('');
+  });
+}
+
+function _renderQrisMode(mode) {
+  const sel = document.getElementById('qrisModeSel');
+  if (sel) sel.value = mode;
+}
+
+async function applyPreset(mode) {
+  const sel = document.getElementById(`preset_${mode}`);
+  if (!sel || !sel.value) return;
+  try {
+    const r = await apiFetch('/presets/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ mode, name: sel.value }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      log('ok', `Preset ${mode}/${sel.value} applied`);
+      aiSettingsLoad();   // refresh form values
+    } else {
+      log('err', `Preset apply gagal: ${d.error}`);
+    }
+  } catch (e) {
+    log('err', `Preset error: ${e}`);
+  }
+}
+
+async function toggleAutosave() {
+  state.autosave = !!document.getElementById('autosaveSwitch').checked;
+  try {
+    await apiFetch('/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ autosave_enabled: state.autosave }),
+    });
+    log('ok', `Autosave ${state.autosave ? 'ON' : 'OFF'}`);
+  } catch (e) {
+    log('err', `Autosave toggle gagal: ${e}`);
+  }
+  _refreshSaveBtnVisibility();
+}
+
+async function aiSettingsLockToggle() {
+  const wantLock = !state.keysLocked;
+  if (wantLock) {
+    if (!confirm('Lock API keys? Web UI tidak akan bisa mengubah lagi. ' +
+                 'Unlock dilakukan via tools/unlock_keys.py di device.')) {
+      return;
+    }
+  } else {
+    alert('Untuk unlock, jalankan: python3 tools/unlock_keys.py pada device. ' +
+          'Lock tidak bisa di-clear dari web UI demi keamanan.');
+    return;
+  }
+  try {
+    const r = await apiFetch('/ai-settings/secure', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ lock: true }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      state.keysLocked = !!d.keys_locked;
+      _renderLockBadge();
+      log('ok', `API keys ${state.keysLocked ? 'locked' : 'unlocked'}`);
+    } else {
+      log('err', `Lock toggle gagal: ${d.error}`);
+    }
+  } catch (e) {
+    log('err', `Lock error: ${e}`);
+  }
+}
+
+async function aiSettingsEncryptKey(provider) {
+  const inp = document.getElementById(`${provider}Key`);
+  const raw = (inp.value || '').trim();
+  if (!raw) {
+    alert('Masukkan API key dulu di kolom yang sama, lalu klik "Enkripsi & Simpan".');
+    return;
+  }
+  if (!confirm(`Enkripsi & simpan API key untuk ${provider}? Plaintext lama akan dihapus.`)) {
+    return;
+  }
+  try {
+    const r = await apiFetch('/ai-settings/secure', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ provider, api_key: raw }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      inp.value = '';
+      log('ok', `${provider} API key terenkripsi & tersimpan`);
+      aiSettingsLoad();
+    } else {
+      log('err', `Enkripsi gagal: ${d.error} (${d.hint||''})`);
+    }
+  } catch (e) {
+    log('err', `Enkripsi error: ${e}`);
+  }
+}
+
+async function aiSettingsSave(opts = {}) {
+  const silent = !!opts.silent;
+
   const aiPayload = {
     ai_provider:    _aiCurrentProvider,
     ai_timeout_s:   parseInt(document.getElementById('aiTimeout').value) || 15,
@@ -1159,24 +1410,30 @@ async function aiSettingsSave() {
   const oKey = document.getElementById('openaiKey').value.trim();
   const gKey = document.getElementById('geminiKey').value.trim();
   const cKey = document.getElementById('claudeKey').value.trim();
-  if (oKey) aiPayload.openai_api_key = oKey;
-  if (gKey) aiPayload.gemini_api_key = gKey;
-  if (cKey) aiPayload.claude_api_key = cKey;
+  // When locked, never send plaintext key — operator must use the encrypt button.
+  if (!state.keysLocked) {
+    if (oKey) aiPayload.openai_api_key = oKey;
+    if (gKey) aiPayload.gemini_api_key = gKey;
+    if (cKey) aiPayload.claude_api_key = cKey;
+  }
 
-  // Hardware payload (sent via POST /config)
+  const qrisModeSel = document.getElementById('qrisModeSel');
   const hwPayload = {
     conf_threshold: parseFloat(document.getElementById('hwConfThreshold').value) || 0.5,
     audio_volume:   parseInt(document.getElementById('hwVolume').value)           || 80,
   };
+  if (qrisModeSel && qrisModeSel.value) {
+    hwPayload.qris_mode = qrisModeSel.value;
+  }
 
   try {
     const [rAI, rHW] = await Promise.all([
-      fetch('/ai-settings', {
+      apiFetch('/ai-settings', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify(aiPayload),
       }),
-      fetch('/config', {
+      apiFetch('/config', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify(hwPayload),
@@ -1184,8 +1441,19 @@ async function aiSettingsSave() {
     ]);
     const dAI = await rAI.json();
     if (dAI.ok) {
-      log('ok', `Settings disimpan — provider: ${aiPayload.ai_provider}, conf: ${hwPayload.conf_threshold}, vol: ${hwPayload.audio_volume}`);
-      closeAISettings();
+      state._dirty = false;
+      _refreshSaveBtnVisibility();
+      if (!silent) {
+        log('ok', `Settings disimpan — provider: ${aiPayload.ai_provider}, conf: ${hwPayload.conf_threshold}, vol: ${hwPayload.audio_volume}`);
+        closeAISettings();
+      } else {
+        // pulse the save button to show autosaved
+        const btn = document.getElementById('btnAISave');
+        if (btn) {
+          btn.classList.add('saved-pulse');
+          setTimeout(() => btn.classList.remove('saved-pulse'), 800);
+        }
+      }
     } else {
       log('err', `Gagal simpan AI settings: ${dAI.error}`);
     }
@@ -1201,7 +1469,7 @@ async function aiSettingsTest() {
   res.textContent = 'Testing...';
   res.className   = 'ai-test-result';
   try {
-    const r = await fetch('/ai-settings/test', { method: 'POST' });
+    const r = await apiFetch('/ai-settings/test', { method: 'POST' });
     const d = await r.json();
     if (d.ok) {
       res.textContent = `✓ OK — ${d.message}`;
