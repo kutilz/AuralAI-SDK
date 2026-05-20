@@ -193,6 +193,24 @@ class AudioManager:
         with self._text_lock:
             return self._current_text
 
+    def _tts_synthesize(self, text: str) -> Optional[str]:
+        """Synthesize text via gTTS and cache to tts_cache_dir. Returns wav path or None."""
+        try:
+            from config import cfg as _cfg
+            if not _cfg.get("tts_enabled", True):
+                return None
+            cache_dir = _cfg.get("tts_cache_dir", "/root/audio/tts_cache")
+        except Exception:
+            cache_dir = "/root/audio/tts_cache"
+        try:
+            from utils.tts import get_or_synthesize
+            return get_or_synthesize(text, cache_dir=cache_dir)
+        except Exception as e:
+            self.logger.exception(
+                f"TTS synthesis failed: {e}", module="AudioMgr", exc=e
+            )
+            return None
+
     def _play_task(self, task: _Task):
         """Execute playback for one task; blocks until done or interrupted."""
         if task.label:
@@ -203,6 +221,9 @@ class AudioManager:
         with self._text_lock:
             self._current_text = task.text
         self._interrupt.clear()
+
+        if task.wav_path is None:
+            task.wav_path = self._tts_synthesize(task.text)
 
         played = False
         if task.wav_path:

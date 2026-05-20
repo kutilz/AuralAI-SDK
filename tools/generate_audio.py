@@ -54,16 +54,19 @@ POSITIONS = {
 }
 
 SYSTEM_EVENTS = {
-    "mode_explorer_aktif":  "mode penjelajah aktif",
-    "mode_context_aktif":   "mode konteks aktif",
-    "mode_qris_aktif":      "mode scan bayar aktif",
-    "sedang_menganalisis":  "sedang menganalisis",
-    "selesai":              "selesai",
-    "koneksi_gagal":        "koneksi gagal",
-    "baterai_lemah":        "baterai lemah",
-    "tidak_ada_deteksi":    "tidak ada objek terdeteksi",
-    "api_tidak_tersedia":   "API tidak tersedia",
-    "gagal_menganalisis":   "gagal menganalisis",
+    "mode_explorer_aktif":          "mode penjelajah aktif",
+    "mode_context_aktif":           "mode konteks aktif",
+    "mode_qris_aktif":              "mode scan bayar aktif",
+    "sedang_menganalisis":          "sedang menganalisis",
+    "masih_memproses":              "masih memproses",
+    "memindai_kode_pembayaran":     "memindai kode pembayaran",
+    "selesai":                      "selesai",
+    "koneksi_gagal":                "koneksi gagal",
+    "baterai_lemah":                "baterai lemah",
+    "tidak_ada_deteksi":            "tidak ada objek terdeteksi",
+    "api_tidak_tersedia":           "API tidak tersedia",
+    "gagal_menganalisis":           "gagal menganalisis",
+    "gagal_memindai":               "gagal memindai, coba lagi",
 }
 
 

@@ -74,6 +74,11 @@ _DEFAULTS: dict = {
     # API key encryption lock — when True, web UI cannot overwrite
     # encrypted keys. Unlock procedure: tools/unlock_keys.py on device.
     "api_keys_locked":          False,
+    # TTS hybrid: synthesize dynamic text via gTTS and cache on device
+    "tts_enabled":              True,
+    "tts_cache_dir":            "/root/audio/tts_cache",
+    # I2C battery HAT: enabled only after manual probe via /i2c-probe endpoint
+    "i2c_battery_enabled":      False,
 }
 
 
@@ -311,6 +316,18 @@ class Config:
     @property
     def API_KEYS_LOCKED(self) -> bool:
         return bool(self.get("api_keys_locked", False))
+
+    @property
+    def TTS_ENABLED(self) -> bool:
+        return bool(self.get("tts_enabled", True))
+
+    @property
+    def TTS_CACHE_DIR(self) -> str:
+        return self.get("tts_cache_dir", "/root/audio/tts_cache")
+
+    @property
+    def I2C_BATTERY_ENABLED(self) -> bool:
+        return bool(self.get("i2c_battery_enabled", False))
 
 
 # ─── Singleton ────────────────────────────────────────────────────────────────
