@@ -251,20 +251,69 @@ class AIEngine:
             self.orch.audio_manager.queue_system("gagal_menganalisis")
 
     def trigger_qris_scan(self):
-        """Capture last frame → AI Vision adapter → parse QRIS result."""
+        """
+        QRIS scan dispatcher. Behavior depends on cfg.QRIS_MODE:
+
+          - "offline": local zbar decoder only. No internet required.
+                       AI is never called; nominal taken as-is from QR payload.
+
+          - "online":  AI Vision only (legacy behavior). Used when local
+                       decoder unavailable or operator explicitly wants
+                       AI-only enrichment.
+
+          - "hybrid":  local decode + AI cross-check (default). If local
+                       decode succeeds, that's the source of truth for
+                       merchant + nominal. AI output is used only to
+                       enrich and to flag mismatches; AI nominal can
+                       never override the local nominal.
+        """
         frame = self._last_frame
         if frame is None:
             return
 
+        mode = cfg.QRIS_MODE
         self.logger.info(
-            f"Sending frame to {cfg.AI_PROVIDER} (QRIS)", module="AIEngine"
+            f"QRIS scan triggered (mode={mode})", module="AIEngine",
         )
         self.orch.audio_manager.queue_system("memindai_kode_pembayaran")
 
+        jpeg = self._frame_jpeg()
+
+        if mode == "offline":
+            self._qris_offline(jpeg)
+        elif mode == "online":
+            self._qris_online(jpeg)
+        else:
+            self._qris_hybrid(jpeg)
+
+    # ─── QRIS sub-flows ───────────────────────────────────────────────────────
+
+    def _qris_offline(self, jpeg: bytes):
+        try:
+            from utils.qris_verify import decode_qris, verify_against_ai, format_audio_message
+        except Exception as e:
+            self.logger.exception(
+                f"QRIS offline decoder unavailable: {e}",
+                module="AIEngine", exc=e,
+            )
+            self.orch.audio_manager.queue_system("gagal_memindai")
+            return
+
+        local = decode_qris(jpeg)
+        verified = verify_against_ai(local, ai_text="")
+        text, safe = format_audio_message(verified, cap=cfg.QRIS_NOMINAL_WARN_CAP)
+        self.logger.ok(f"QRIS(offline): {text}", module="AIEngine")
+        if safe:
+            self.orch.audio_manager.queue_info(text)
+        else:
+            self.orch.audio_manager.queue_system("gagal_memindai")
+        self._save_qris_log(text)
+
+    def _qris_online(self, jpeg: bytes):
         try:
             adapter = self._get_adapter()
-            result = adapter.scan_qris(self._frame_jpeg(), cfg.PROMPT_QRIS)
-            self.logger.ok(f"QRIS: {result}", module="AIEngine")
+            result = adapter.scan_qris(jpeg, cfg.PROMPT_QRIS)
+            self.logger.ok(f"QRIS(online): {result}", module="AIEngine")
             self.orch.audio_manager.queue_info(result)
             self._save_qris_log(result)
         except AdapterError as e:
@@ -275,6 +324,53 @@ class AIEngine:
                 f"Unexpected adapter error: {e}", module="AIEngine", exc=e,
             )
             self.orch.audio_manager.queue_system("gagal_memindai")
+
+    def _qris_hybrid(self, jpeg: bytes):
+        # 1) local decode (fast, offline)
+        try:
+            from utils.qris_verify import decode_qris, verify_against_ai, format_audio_message
+        except Exception as e:
+            self.logger.exception(
+                f"QRIS hybrid: local decoder unavailable, falling back to online: {e}",
+                module="AIEngine", exc=e,
+            )
+            self._qris_online(jpeg)
+            return
+
+        local = decode_qris(jpeg)
+
+        # 2) AI call (best-effort enrichment + nominal cross-check)
+        ai_text = ""
+        try:
+            adapter = self._get_adapter()
+            ai_text = adapter.scan_qris(jpeg, cfg.PROMPT_QRIS) or ""
+        except AdapterError as e:
+            self.logger.warn(
+                f"QRIS hybrid: AI unavailable, using local only: {e}",
+                module="AIEngine",
+            )
+        except Exception as e:
+            self.logger.exception(
+                f"QRIS hybrid AI error: {e}", module="AIEngine", exc=e,
+            )
+
+        verified = verify_against_ai(local, ai_text)
+        text, safe = format_audio_message(verified, cap=cfg.QRIS_NOMINAL_WARN_CAP)
+        self.logger.ok(f"QRIS(hybrid): {text}", module="AIEngine")
+        if safe:
+            self.orch.audio_manager.queue_info(text)
+        else:
+            # Local failed AND we have nothing trustworthy → graceful fallback
+            if ai_text:
+                # Last resort: use raw AI text but flagged in logs
+                self.logger.warn(
+                    "QRIS hybrid: local failed, falling back to AI raw",
+                    module="AIEngine",
+                )
+                self.orch.audio_manager.queue_info(ai_text)
+            else:
+                self.orch.audio_manager.queue_system("gagal_memindai")
+        self._save_qris_log(text)
 
     def _save_qris_log(self, result: str):
         import json as _json
