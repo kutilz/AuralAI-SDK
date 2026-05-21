@@ -2,6 +2,106 @@
 
 ---
 
+## [Phase 4 — Companion Redesign] — 2026-05-21
+
+Implements the `design_handoff_auralai_redesign/` package: split the operator
+dashboard into three audience-specific interfaces plus a first-time setup
+wizard, all WCAG 2.1 AA compliant.
+
+### New routes
+
+- `GET /`                       — Companion dashboard for pendamping (guru SLB,
+                                  keluarga). Redirects to `/setup` when
+                                  `setup_completed` is false.
+- `GET /admin`                  — Operator/dev dashboard. Wraps the companion
+                                  view + adds AdminRibbon, Debug Overlay,
+                                  DevSidebar with log tail + quick actions.
+- `GET /guide`                  — Public scroll-page panduan (no auth). Hero
+                                  + Storyboard + Hardware + Audio + Audio
+                                  preference picker.
+- `GET /setup`                  — 4-step first-time wizard (power → wifi →
+                                  AI key → handover checklist).
+- `GET /admin/legacy`           — Original operator dashboard
+                                  (`static/index.html`), kept reachable.
+- `GET /tokens.css`             — Design tokens (single source of truth).
+- `GET /audio/chimes/manifest.json`
+                                — Lists pre-recorded chime WAVs; frontend
+                                  hides the "Putar" column when empty.
+- `GET /assets/manifest.json`   — Lists available photo assets; frontend
+                                  swaps SVG mockups for photos when files
+                                  exist in `/root/assets/`.
+- `GET /assets/<name>`          — Static asset serving with mime guess +
+                                  immutable cache headers.
+- `GET /history?date=today`     — Activity feed (parsed from log buffer).
+- `GET /app/<...>`              — Hashed JS/CSS chunks from the Vite build.
+
+### New config keys
+
+- `audio_mode`: `"chime"` | `"speech"` | `"both"` (default `"both"`).
+  AudioManager `_play_task` now honors this: chime mode drops TTS fallback,
+  speech mode bypasses pre-recorded chimes.
+- `admin_role_token`: optional separate token for admin role. Empty =
+  device_token grants admin too.
+- `setup_completed`: bool gate for first-time wizard redirect.
+- `assets_dir`: filesystem path for `/assets/<name>` serving (default
+  `/root/assets`).
+
+### New status fields
+
+`GET /status` now returns:
+
+- `battery` (int 0..100 or `null` when no calibrated HAT)
+- `wifi_signal` (0..4 bars from `/proc/net/wireless`)
+- `wifi_ssid` (`iwgetid -r`)
+- `temperature` (CPU °C)
+- `last_caption` (`{text, time_iso, priority}`)
+- `audio_mode`
+- `setup_completed`
+
+### UI build pipeline
+
+- **New** `device/server/src/` — Vite + Preact + TypeScript source for the
+  four new pages. Builds into `device/server/static/app/` which is committed
+  (device has no Node.js). Total runtime ~10 KB gz shared chunk + 0.5-9 KB
+  gz per page. Dev: `cd device/server/src && npm install && npm run build`.
+- **New** `device/server/static/tokens.css` — design tokens, served at
+  `/tokens.css` and linked from every entry HTML. Edit-and-reload, no
+  rebuild needed.
+- **New** `device/server/src/i18n/{id,en}.json` — id.json populated; en.json
+  is a stub. See `device/server/src/README.md` for the 3-step EN swap-in.
+
+### Audio manager
+
+- `current_text` companion property `last_caption` now exposes the most
+  recent caption with timestamp + priority, persists after playback ends.
+- `_play_task` checks `cfg.AUDIO_MODE` per task — change the preference via
+  `POST /config { "audio_mode": "..." }` and the next task respects it.
+
+### Accessibility (WCAG 2.1 AA)
+
+- A11y bar on every new page: high-contrast / large-type / reduced-motion,
+  persisted to localStorage.
+- Skip-link "Lewati ke konten utama" first focusable element.
+- `aria-live="polite"` on StatusBanner + LiveView last-caption.
+- `role="radiogroup"` + `role="radio"` for mode + audio-mode pickers.
+- Hit-targets ≥ 48 px via `--hit` token.
+- Keyboard shortcuts 1/2/3 mode, +/- volume, ? help. Skipped when an input
+  has focus.
+- `<html lang="id">` set at runtime via lib/i18n.
+
+### Files
+
+- `device/config.py` — `_DEFAULTS` + typed properties
+- `device/server/web_server.py` — new routes
+- `device/core/orchestrator.py` — `get_status()` + telemetry helpers
+- `device/core/audio_manager.py` — `last_caption` + audio_mode gating
+- `device/server/static/tokens.css` (new)
+- `device/server/static/app/` (new — built artifact)
+- `device/server/src/` (new — Preact source)
+- `design_handoff_auralai_redesign/` (vendored handoff package)
+
+---
+
 ## [Phase 3] — 2026-05-14
 
 ### AI Vision API Adapters

@@ -14,6 +14,7 @@
 | **1**  | Object Detection (YOLO11n COCO), Audio Output, Explorer Mode                  | ✅ Ready                                 |
 | **2**  | Scene Description (AI Vision), QRIS Verifier, Token Auth, Presets             | ✅ Ready                                 |
 | **3**  | TTS Hybrid, Log Rotation, Benchmark Suite, Data Collection, Audio Progress    | ✅ Ready                                 |
+| **4**  | Companion UI Redesign — `/` pendamping, `/admin`, `/guide`, `/setup`          | ✅ Ready                                 |
 
 ---
 
@@ -103,8 +104,12 @@ aural-ai-sdk/
 │   │   └── context_mode.py   # Online OpenAI mode
 │   ├── server/
 │   │   ├── web_server.py     # HTTP server
-│   │   ├── routes.py         # API endpoints
-│   │   └── static/           # Web Dashboard (HTML/CSS/JS)
+│   │   ├── routes.py         # API endpoints (doc only)
+│   │   ├── static/           # Static files
+│   │   │   ├── index.html    # Dashboard operator lama (served at /admin/legacy)
+│   │   │   ├── tokens.css    # Design tokens — sumber tunggal
+│   │   │   └── app/          # Hasil `vite build` (committed)
+│   │   └── src/              # Preact + Vite source untuk /, /admin, /guide, /setup
 │   └── utils/
 │       ├── logger.py
 │       └── latency_tester.py
@@ -124,15 +129,50 @@ aural-ai-sdk/
 
 ## API Endpoints
 
-| Method | Endpoint        | Fungsi                                            |
-| ------ | --------------- | ------------------------------------------------- |
-| `GET`  | `/`             | Web Dashboard                                     |
-| `GET`  | `/snapshot`     | JPEG frame terbaru                                |
-| `GET`  | `/status`       | JSON: mode, detections, latency                   |
-| `POST` | `/command`      | `{"cmd": "focus"\|"capture"\|"qris"\|"describe"}` |
-| `GET`  | `/audio/{file}` | Serve WAV file                                    |
-| `GET`  | `/logs`         | Log terbaru (50 baris)                            |
-| `POST` | `/config`       | Update konfigurasi                                |
+### Halaman (Phase 4 redesign)
+
+| Method | Endpoint        | Fungsi                                            | Auth |
+| ------ | --------------- | ------------------------------------------------- | ---- |
+| `GET`  | `/`             | Companion dashboard (redirect ke `/setup` saat first-time) | optional |
+| `GET`  | `/admin`        | Admin dashboard (companion + dev sidebar)         | `device_token` (atau `admin_role_token` kalau di-set) |
+| `GET`  | `/guide`        | Panduan publik                                    | none |
+| `GET`  | `/setup`        | Setup wizard 4 langkah                            | optional |
+| `GET`  | `/admin/legacy` | Operator dashboard lama (fallback debug)          | optional |
+| `GET`  | `/tokens.css`   | Design tokens (sumber tunggal)                    | none |
+| `GET`  | `/app/<...>`    | Hashed JS/CSS dari Vite build                     | none |
+
+### Data API
+
+| Method | Endpoint                          | Fungsi                                              |
+| ------ | --------------------------------- | --------------------------------------------------- |
+| `GET`  | `/snapshot`                       | JPEG frame terbaru                                  |
+| `GET`  | `/status`                         | JSON: mode, detections, latency, battery, wifi, audio_mode, last_caption, setup_completed |
+| `GET`  | `/logs`                           | Log terbaru (50 baris)                              |
+| `GET`  | `/history?date=today`             | Activity feed untuk dashboard pendamping            |
+| `GET`  | `/health`                         | Hardware health metrics                             |
+| `GET`  | `/audio/{file}`                   | Serve WAV file                                      |
+| `GET`  | `/audio/chimes/manifest.json`     | Daftar chime yang tersedia                          |
+| `GET`  | `/assets/manifest.json`           | Daftar foto asset                                   |
+| `GET`  | `/assets/{name}`                  | Serve foto asset (fallback ke SVG mockup di UI)     |
+| `POST` | `/command`                        | `{"cmd": "focus"\|"capture"\|"qris"\|"describe"\|"set_mode"}` |
+| `POST` | `/config`                         | Update config (audio_volume, audio_mode, setup_completed, dll) |
+
+---
+
+## Build UI
+
+Source UI ada di `device/server/src/` (Preact + Vite). Output build di-commit ke
+`device/server/static/app/` karena MaixCAM tidak punya Node.js.
+
+```bash
+cd device/server/src
+npm install                 # sekali
+npm run build               # menghasilkan ../static/app/{companion,admin,guide,setup}.html + assets/
+npm run dev                 # dev server di http://localhost:5173 (proxy /status, /snapshot, dll ke localhost:8080)
+```
+
+Setelah `npm run build`, commit ulang folder `static/app/` bersama perubahan source.
+Detail + cara menambah bahasa Inggris: lihat [`device/server/src/README.md`](device/server/src/README.md).
 
 ---
 
