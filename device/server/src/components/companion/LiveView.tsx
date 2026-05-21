@@ -1,3 +1,4 @@
+import { useState } from "preact/hooks";
 import { useSnapshotUrl } from "../../lib/polling";
 import { Icon } from "../atoms/Icon";
 import { apiPost } from "../../lib/api";
@@ -6,6 +7,7 @@ import type { DeviceStatus } from "./types";
 /** Live camera + last caption block. /snapshot polls at 500 ms. */
 export function LiveView({ status }: { status: DeviceStatus | null }) {
   const url = useSnapshotUrl(500);
+  const [camError, setCamError] = useState(false);
   const caption = status?.last_caption.text || status?.audio_text || "(belum ada suara)";
   const captionStale = !status?.last_caption.text;
   const repeat = () => apiPost("/command", { cmd: "describe" }).catch(() => {});
@@ -20,9 +22,15 @@ export function LiveView({ status }: { status: DeviceStatus | null }) {
         <h2 id="live-title" style={{ margin: 0, fontSize: "var(--t-lg)" }}>
           Yang dilihat pengguna
         </h2>
-        <span class="badge badge--ok" style={{ marginLeft: "auto" }}>
-          <span class="dot dot--ok" /> Live
-        </span>
+        {camError ? (
+          <span class="badge badge--warn" style={{ marginLeft: "auto" }}>
+            <span class="dot dot--warn" /> Kamera tidak aktif
+          </span>
+        ) : (
+          <span class="badge badge--ok" style={{ marginLeft: "auto" }}>
+            <span class="dot dot--ok" /> Live
+          </span>
+        )}
       </header>
       <div
         style={{
@@ -37,12 +45,23 @@ export function LiveView({ status }: { status: DeviceStatus | null }) {
         <img
           src={url}
           alt="Pratinjau kamera AuralAI"
-          style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
-          onError={(e) => {
-            // hide broken img — show a friendly placeholder behind.
-            (e.currentTarget as HTMLImageElement).style.opacity = "0";
-          }}
+          style={{ width: "100%", height: "100%", objectFit: "cover", display: camError ? "none" : "block" }}
+          onLoad={() => setCamError(false)}
+          onError={() => setCamError(true)}
         />
+        {camError && (
+          <div
+            style={{
+              position: "absolute", inset: 0,
+              display: "flex", flexDirection: "column",
+              alignItems: "center", justifyContent: "center",
+              gap: 8, color: "var(--ink-3)",
+            }}
+          >
+            <Icon name="glasses" size={32} />
+            <span style={{ fontSize: "var(--t-sm)" }}>Kamera belum siap</span>
+          </div>
+        )}
       </div>
 
       <div

@@ -233,19 +233,76 @@ class Orchestrator:
                 break
         except Exception:
             pass
-        # 2. SSID via iwgetid (lightweight, ships with wireless-tools).
-        try:
-            import subprocess
-            out = subprocess.run(
-                ["iwgetid", "-r"],
-                shell=False, stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                timeout=1,
-            )
-            if out.returncode == 0:
-                ssid = out.stdout.decode("utf-8", "ignore").strip()
-        except Exception:
-            pass
+        # 1b. Fallback signal via `iw dev wlan0 link` (parses "signal: -NN dBm").
+        #     Used on devices where /proc/net/wireless is absent (e.g. MaixCAM
+        #     with AIC8800 driver that doesn't populate that file).
+        if signal == 0:
+            import subprocess as _sp
+            try:
+                _iw = _sp.run(
+                    ["/usr/sbin/iw", "dev", "wlan0", "link"],
+                    shell=False, stdin=_sp.DEVNULL,
+                    stdout=_sp.PIPE, stderr=_sp.DEVNULL,
+                    timeout=1,
+                )
+                for _line in _iw.stdout.decode("utf-8", "ignore").splitlines():
+                    _line = _line.strip()
+                    if _line.startswith("signal:"):
+                        # "signal: -62 dBm" → -62
+                        try:
+                            _dbm = float(_line.split()[1])
+                            # dBm → 0..4 bars: -50→4, -60→3, -70→2, -80→1, <-80→0
+                            if _dbm >= -50:
+                                signal = 4
+                            elif _dbm >= -60:
+                                signal = 3
+                            elif _dbm >= -70:
+                                signal = 2
+                            elif _dbm >= -80:
+                                signal = 1
+                            else:
+                                signal = 0
+                        except (ValueError, IndexError):
+                            pass
+                        break
+            except Exception:
+                pass
+        # 2. SSID — try iwgetid (full path for non-login shells where
+        #    /usr/sbin is absent from PATH), then fall back to wpa_cli.
+        import subprocess
+        for cmd in (
+            ["/usr/sbin/iwgetid", "-r"],
+            ["iwgetid", "-r"],
+        ):
+            try:
+                out = subprocess.run(
+                    cmd,
+                    shell=False, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    timeout=1,
+                )
+                if out.returncode == 0:
+                    ssid = out.stdout.decode("utf-8", "ignore").strip()
+                    if ssid:
+                        break
+            except (FileNotFoundError, Exception):
+                pass
+        if not ssid:
+            # Fallback: wpa_cli status (parses "ssid=..." line)
+            try:
+                out2 = subprocess.run(
+                    ["wpa_cli", "-i", "wlan0", "status"],
+                    shell=False, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    timeout=1,
+                )
+                if out2.returncode == 0:
+                    for line in out2.stdout.decode("utf-8", "ignore").splitlines():
+                        if line.startswith("ssid="):
+                            ssid = line[5:].strip()
+                            break
+            except Exception:
+                pass
         return {"ssid": ssid, "signal": signal}
 
     @staticmethod
