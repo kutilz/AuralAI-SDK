@@ -151,21 +151,114 @@ class Orchestrator:
 
     def get_status(self) -> dict:
         audio_text = ""
+        last_caption = {"text": "", "time_iso": "", "priority": "low"}
         if self.audio_manager:
             try:
                 audio_text = self.audio_manager.current_text
             except Exception:
                 pass
+            try:
+                last_caption = self.audio_manager.last_caption
+            except Exception:
+                pass
+
+        # ── Hardware telemetry for companion dashboard (handoff §8.1) ─────────
+        battery = self._battery_pct()
+        wifi    = self._wifi_info()
+        temp_c  = self._cpu_temp_c()
+
         with self._lock:
             return {
-                "mode":        self._mode,
-                "ai_focus":    self._ai_focus,
-                "detections":  list(self._detections),
-                "latency":     dict(self._latency),
-                "audio_text":  audio_text,
-                "cam_w":       cfg.get("input_width",  320),
-                "cam_h":       cfg.get("input_height", 224),
+                "mode":         self._mode,
+                "ai_focus":     self._ai_focus,
+                "detections":   list(self._detections),
+                "latency":      dict(self._latency),
+                "audio_text":   audio_text,
+                "audio_mode":   cfg.get("audio_mode", "both"),
+                "last_caption": last_caption,
+                "battery":      battery,
+                "wifi_signal":  wifi["signal"],
+                "wifi_ssid":    wifi["ssid"],
+                "temperature":  temp_c,
+                "setup_completed": cfg.get("setup_completed", False),
+                "cam_w":        cfg.get("input_width",  320),
+                "cam_h":        cfg.get("input_height", 224),
             }
+
+    # ─── Hardware telemetry helpers (called from get_status) ──────────────────
+
+    def _battery_pct(self):
+        """
+        Return battery percentage 0..100 if I2C HAT enabled & gauge readable,
+        else None. UI shows "(belum dikalibrasi)" when None.
+        """
+        try:
+            from utils.health import battery_hat_present, battery_info
+            if not battery_hat_present():
+                return None
+            info = battery_info()
+            # Stub returns {"present": True}; once HAT driver lands it
+            # should also return "percent": int.
+            if "percent" in info:
+                return int(info["percent"])
+            return None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _wifi_info() -> dict:
+        """
+        Read SSID + signal bars (0..4) from /proc/net/wireless and iwconfig.
+        Cheap (no shell-out unless iwconfig is needed for SSID lookup).
+        Falls back gracefully to {"ssid": "", "signal": 0} on any error.
+        """
+        ssid = ""
+        signal = 0
+        # 1. Signal bars from /proc/net/wireless quality column.
+        try:
+            with open("/proc/net/wireless") as f:
+                lines = f.read().splitlines()
+            for raw in lines[2:]:
+                parts = raw.split()
+                if not parts:
+                    continue
+                # quality.link is parts[2], e.g. "70." — typical range 0..70.
+                q_raw = parts[2].rstrip(".")
+                try:
+                    q = float(q_raw)
+                except ValueError:
+                    continue
+                # Map 0..70 → 0..4 bars (every ~17.5).
+                signal = max(0, min(4, int(q / 17.5)))
+                break
+        except Exception:
+            pass
+        # 2. SSID via iwgetid (lightweight, ships with wireless-tools).
+        try:
+            import subprocess
+            out = subprocess.run(
+                ["iwgetid", "-r"],
+                shell=False, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                timeout=1,
+            )
+            if out.returncode == 0:
+                ssid = out.stdout.decode("utf-8", "ignore").strip()
+        except Exception:
+            pass
+        return {"ssid": ssid, "signal": signal}
+
+    @staticmethod
+    def _cpu_temp_c():
+        """Return CPU temperature in °C, or None if unavailable."""
+        try:
+            from utils.health import _thermals
+            t = _thermals()
+            if not t:
+                return None
+            return max(t.values())
+        except Exception:
+            return None
 
     # ─── Mode switching ───────────────────────────────────────────────────────
 

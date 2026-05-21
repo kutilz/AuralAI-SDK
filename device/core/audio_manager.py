@@ -80,6 +80,9 @@ class AudioManager:
         self._current_priority = LOW
         # Text currently being played (exposed to status endpoint)
         self._current_text: str = ""
+        # Last non-empty caption, persists after playback completes so the
+        # companion dashboard can show the most recent thing the user heard.
+        self._last_caption: dict = {"text": "", "time_iso": "", "priority": "low"}
         self._text_lock = threading.Lock()
         # Set to interrupt ongoing playback sleep loop
         self._interrupt = threading.Event()
@@ -193,6 +196,24 @@ class AudioManager:
         with self._text_lock:
             return self._current_text
 
+    @property
+    def last_caption(self) -> dict:
+        """
+        Most recent non-empty caption, persists after playback ends.
+
+        Returns dict: {text, time_iso, priority}. Priority is the human-
+        readable string ("critical" | "high" | "normal" | "low").
+        """
+        with self._text_lock:
+            return dict(self._last_caption)
+
+    # ─── Audio-mode gating (handoff §4.3) ─────────────────────────────────────
+
+    @staticmethod
+    def _priority_label(p: int) -> str:
+        return {CRITICAL: "critical", HIGH: "high",
+                NORMAL: "normal", LOW: "low"}.get(p, "low")
+
     def _tts_synthesize(self, text: str) -> Optional[str]:
         """Synthesize text via gTTS and cache to tts_cache_dir. Returns wav path or None."""
         try:
@@ -213,6 +234,28 @@ class AudioManager:
 
     def _play_task(self, task: _Task):
         """Execute playback for one task; blocks until done or interrupted."""
+        # Resolve audio_mode preference fresh each task — user can change it
+        # mid-session via /config without restarting the device.
+        try:
+            from config import cfg as _cfg
+            audio_mode = _cfg.AUDIO_MODE
+        except Exception:
+            audio_mode = "both"
+
+        # Gate playback against the user's preferred audio_mode.
+        #   "chime"  → only pre-recorded WAV plays; tasks that would fall back
+        #              to TTS are silently dropped (still cooldown-marked).
+        #   "speech" → always synthesize TTS; ignore any pre-recorded WAV
+        #              that _find_wav located.
+        #   "both"   → legacy behaviour, no gating.
+        if audio_mode == "chime" and task.wav_path is None:
+            self.logger.debug(
+                f"[Audio skipped — chime-only] {task.text}", module="AudioMgr"
+            )
+            return
+        if audio_mode == "speech":
+            task.wav_path = None  # force TTS path
+
         if task.label:
             with self._cd_lock:
                 self._cooldown_map[task.label] = time.monotonic()
@@ -220,6 +263,14 @@ class AudioManager:
         self._current_priority = task.priority
         with self._text_lock:
             self._current_text = task.text
+            # Capture last caption now (rather than after playback) so the
+            # dashboard reflects what's playing in real time. Use local time
+            # ISO format consistent with logger entries (no timezone suffix).
+            self._last_caption = {
+                "text":     task.text,
+                "time_iso": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "priority": self._priority_label(task.priority),
+            }
         self._interrupt.clear()
 
         if task.wav_path is None:
