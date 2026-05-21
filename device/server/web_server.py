@@ -235,8 +235,14 @@ class AuralAIHandler(BaseHTTPRequestHandler):
 
         if path == "/" or path == "/index.html":
             self._serve_file("index.html", "text/html")
+        elif path == "/admin/legacy" or path == "/admin/legacy/":
+            # Companion redesign: keep the old operator dashboard reachable for
+            # fallback debug after `/` switches to the new companion view.
+            self._serve_file("index.html", "text/html")
         elif path == "/style.css":
             self._serve_file("style.css", "text/css")
+        elif path == "/tokens.css":
+            self._serve_file("tokens.css", "text/css")
         elif path == "/dashboard.js":
             self._serve_file("dashboard.js", "application/javascript")
         elif path == "/snapshot":
@@ -245,8 +251,17 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             self._serve_status()
         elif path == "/logs":
             self._serve_logs()
+        elif path == "/history":
+            self._serve_history()
         elif path == "/health":
             self._serve_health()
+        # Companion redesign — manifest endpoints (must precede /audio/, /assets/)
+        elif path == "/audio/chimes/manifest.json":
+            self._serve_chimes_manifest()
+        elif path == "/assets/manifest.json":
+            self._serve_assets_manifest()
+        elif path.startswith("/assets/"):
+            self._serve_asset(path[len("/assets/"):])
         elif path.startswith("/audio/"):
             self._serve_audio(path[7:])
         # ── Benchmark endpoints ────────────────────────────────────────────────
@@ -452,8 +467,14 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             self._send_error(e)
 
     def _serve_audio(self, filename):
-        from config import AUDIO_DIR
-        filepath = os.path.join(AUDIO_DIR, filename)
+        from config import cfg as _cfg
+        # Allow files in /audio/ root and subfolders (e.g. /audio/chimes/boot.wav).
+        # Filename is everything after "/audio/" — already URL-decoded by BaseHTTPRequestHandler.
+        # Guard against path traversal.
+        if ".." in filename.split("/"):
+            self._send_404()
+            return
+        filepath = os.path.join(_cfg.AUDIO_DIR, filename)
         try:
             with open(filepath, "rb") as f:
                 data = f.read()
@@ -465,6 +486,136 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             self.wfile.write(data)
         except FileNotFoundError:
             self._send_404()
+
+    # ─── Companion redesign — manifest + asset endpoints (handoff §8.5) ───────
+
+    def _serve_chimes_manifest(self):
+        """List *.wav files in <audio_dir>/chimes. Empty list if folder absent."""
+        from pathlib import Path
+        from config import cfg as _cfg
+        chimes_dir = Path(_cfg.AUDIO_DIR) / "chimes"
+        try:
+            if chimes_dir.exists():
+                files = sorted(p.name for p in chimes_dir.glob("*.wav"))
+            else:
+                files = []
+        except Exception:
+            files = []
+        self._send_json({"chimes": files})
+
+    def _serve_assets_manifest(self):
+        """List files in assets_dir. Empty list if folder absent."""
+        from pathlib import Path
+        from config import cfg as _cfg
+        assets_dir = Path(_cfg.ASSETS_DIR)
+        try:
+            if assets_dir.exists():
+                files = sorted(
+                    p.name for p in assets_dir.iterdir()
+                    if p.is_file() and not p.name.startswith(".")
+                )
+            else:
+                files = []
+        except Exception:
+            files = []
+        self._send_json({"assets": files})
+
+    def _serve_asset(self, filename):
+        """Serve a file from assets_dir. MIME via mimetypes. Guards traversal."""
+        import mimetypes
+        from pathlib import Path
+        from config import cfg as _cfg
+        if not filename or ".." in filename.split("/") or filename.startswith("/"):
+            self._send_404()
+            return
+        # Disallow nested paths — assets is flat.
+        if "/" in filename:
+            self._send_404()
+            return
+        filepath = Path(_cfg.ASSETS_DIR) / filename
+        try:
+            data = filepath.read_bytes()
+        except FileNotFoundError:
+            self._send_404()
+            return
+        except Exception as e:
+            self._send_error(e)
+            return
+        ctype, _ = mimetypes.guess_type(filename)
+        if not ctype:
+            ctype = "application/octet-stream"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", len(data))
+        self.send_header("Cache-Control", "public, max-age=300")
+        self._set_cors_headers()
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _serve_history(self):
+        """
+        Companion activity feed source (handoff §8.4).
+        Parses recent log entries into items {t, mode, text, priority}.
+        Query: ?date=today (only "today" supported now; future: YYYY-MM-DD).
+        """
+        from urllib.parse import parse_qs, urlparse
+        try:
+            qs = parse_qs(urlparse(self.path).query)
+        except Exception:
+            qs = {}
+        date_filter = (qs.get("date") or ["today"])[0]
+
+        # Source 1: in-memory recent log buffer (always available)
+        try:
+            raw = self.orch.logger.get_recent(500)
+        except Exception:
+            raw = []
+
+        items = []
+        # Look at recent audio_text events recorded by orchestrator/audio_manager.
+        # Logger entries are dicts with at least {ts, level, module, msg}
+        # — see utils/logger.py _log().
+        for entry in raw:
+            try:
+                t_iso = entry.get("ts") or ""
+                module = entry.get("module", "")
+                text = entry.get("msg") or ""
+                level = (entry.get("level") or "").lower()
+            except Exception:
+                continue
+            if not text:
+                continue
+            # Filter for user-relevant events. Modules that emit audio/captions:
+            if module not in ("AudioManager", "Orchestrator", "AI", "QRIS"):
+                continue
+            # Derive a "mode" tag from module/text.
+            low = text.lower()
+            if "qris" in low:
+                mode = "qris"
+            elif module == "AI" or "scene" in low or "deskrip" in low:
+                mode = "scene"
+            else:
+                mode = "explorer"
+            # Priority from log level.
+            if level in ("error", "danger", "warn"):
+                priority = "high"
+            elif level in ("info", "ok"):
+                priority = "normal"
+            else:
+                priority = "low"
+            # Short clock from ISO timestamp HH:MM
+            t_clock = t_iso[11:16] if len(t_iso) >= 16 else t_iso[:5]
+            items.append({
+                "t":        t_clock,
+                "t_iso":    t_iso,
+                "mode":     mode,
+                "text":     text,
+                "priority": priority,
+                "module":   module,
+            })
+        # Cap to last 200 (newest last per logger convention).
+        items = items[-200:]
+        self._send_json({"items": items, "date": date_filter})
 
     def _handle_command(self):
         try:
@@ -496,6 +647,15 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             body   = self.rfile.read(length)
             data   = json.loads(body)
             from config import cfg
+            # Validate enum-style fields introduced by the companion redesign.
+            if "audio_mode" in data and data["audio_mode"] not in ("chime", "speech", "both"):
+                self._send_json({
+                    "error": "invalid audio_mode",
+                    "allowed": ["chime", "speech", "both"],
+                }, 400)
+                return
+            if "setup_completed" in data:
+                data["setup_completed"] = bool(data["setup_completed"])
             cfg.update(data)
             self.logger.info(f"Config updated: {list(data.keys())}")
             self._send_json({"ok": True, "applied": list(data.keys())})

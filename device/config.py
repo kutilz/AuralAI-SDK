@@ -79,6 +79,22 @@ _DEFAULTS: dict = {
     "tts_cache_dir":            "/root/audio/tts_cache",
     # I2C battery HAT: enabled only after manual probe via /i2c-probe endpoint
     "i2c_battery_enabled":      False,
+    # Companion redesign (handoff §4.3) — audio playback preference
+    # "chime"  → only pre-recorded chimes, skip TTS
+    # "speech" → only TTS, skip chimes
+    # "both"   → chime then TTS (legacy behavior)
+    "audio_mode":               "both",
+    # Companion redesign (handoff §1) — admin role token. If empty, every
+    # holder of device_token can reach /admin. If set, only admin_role_token
+    # holders can. Companion (`/`) always works with device_token.
+    "admin_role_token":         "",
+    # Companion redesign (handoff §6.2) — first-time setup gate. When False,
+    # `/` redirects to `/setup` wizard. Set to True at the end of the wizard
+    # or manually after provisioning.
+    "setup_completed":          False,
+    # Asset directory for `/assets/*` static serving + manifest.json.
+    # Photos that override the SVG mockups in /guide land here.
+    "assets_dir":               "/root/assets",
 }
 
 
@@ -328,6 +344,24 @@ class Config:
     @property
     def I2C_BATTERY_ENABLED(self) -> bool:
         return bool(self.get("i2c_battery_enabled", False))
+
+    @property
+    def AUDIO_MODE(self) -> str:
+        """Audio playback preference: "chime" | "speech" | "both". Defaults to "both"."""
+        m = self.get("audio_mode", "both")
+        return m if m in ("chime", "speech", "both") else "both"
+
+    @property
+    def ADMIN_ROLE_TOKEN(self) -> str:
+        return self.get("admin_role_token", "") or ""
+
+    @property
+    def SETUP_COMPLETED(self) -> bool:
+        return bool(self.get("setup_completed", False))
+
+    @property
+    def ASSETS_DIR(self) -> str:
+        return self.get("assets_dir", "/root/assets")
 
 
 # ─── Singleton ────────────────────────────────────────────────────────────────
