@@ -233,12 +233,29 @@ class AuralAIHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?")[0]
 
+        # ── Companion redesign page routing (handoff §1) ──────────────────────
+        # Behaviour:
+        #   `/`         → static/app/companion.html if it exists. If first-time
+        #                 (setup_completed=false), 302 to /setup. Falls back to
+        #                 the legacy operator dashboard while the Preact build
+        #                 hasn't shipped yet.
+        #   `/admin`    → static/app/admin.html (or 302 to legacy if missing).
+        #   `/guide`    → static/app/guide.html (public — no auth required).
+        #   `/setup`    → static/app/setup.html.
+        #   `/admin/legacy` → original device/server/static/index.html, kept
+        #                     reachable for debug as long as the project lives.
         if path == "/" or path == "/index.html":
-            self._serve_file("index.html", "text/html")
+            self._serve_companion_root()
+        elif path == "/admin" or path == "/admin/":
+            self._serve_app_page("admin.html", fallback_legacy=True)
+        elif path == "/guide" or path == "/guide/":
+            self._serve_app_page("guide.html")
+        elif path == "/setup" or path == "/setup/":
+            self._serve_app_page("setup.html")
         elif path == "/admin/legacy" or path == "/admin/legacy/":
-            # Companion redesign: keep the old operator dashboard reachable for
-            # fallback debug after `/` switches to the new companion view.
             self._serve_file("index.html", "text/html")
+        elif path.startswith("/app/"):
+            self._serve_app_asset(path[len("/app/"):])
         elif path == "/style.css":
             self._serve_file("style.css", "text/css")
         elif path == "/tokens.css":
@@ -438,6 +455,94 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             self.wfile.write(data)
         except FileNotFoundError:
             self._send_404()
+
+    # ─── Companion redesign — page + asset serving (handoff §1) ───────────────
+
+    def _serve_companion_root(self):
+        """
+        `/` handler. Routes:
+          - to /setup if setup_completed=False (first-time pendamping)
+          - to static/app/companion.html if built and present
+          - falls back to the legacy operator dashboard otherwise so the device
+            is never left without a UI.
+        """
+        from config import cfg as _cfg
+        if not _cfg.SETUP_COMPLETED:
+            self._send_redirect("/setup")
+            return
+        if self._app_file_exists("companion.html"):
+            self._serve_app_page("companion.html")
+            return
+        # Build artefacts not yet present → legacy dashboard.
+        self._serve_file("index.html", "text/html")
+
+    def _serve_app_page(self, filename: str, fallback_legacy: bool = False):
+        """Serve a built HTML entry from static/app/. Optional legacy fallback."""
+        app_dir = os.path.join(STATIC_DIR, "app")
+        filepath = os.path.join(app_dir, filename)
+        if not os.path.isfile(filepath):
+            if fallback_legacy:
+                self._serve_file("index.html", "text/html")
+            else:
+                self._send_404()
+            return
+        try:
+            with open(filepath, "rb") as f:
+                data = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", len(data))
+            # HTML entries are immutable per build hash; allow short caching.
+            self.send_header("Cache-Control", "no-cache")
+            self._set_cors_headers()
+            self.end_headers()
+            self.wfile.write(data)
+        except OSError:
+            self._send_404()
+
+    def _serve_app_asset(self, rel_path: str):
+        """Serve a hashed asset (JS/CSS/img) from static/app/."""
+        import mimetypes
+        # Guard against traversal — these paths come straight from URLs.
+        if not rel_path or ".." in rel_path.split("/") or rel_path.startswith("/"):
+            self._send_404()
+            return
+        app_dir = os.path.join(STATIC_DIR, "app")
+        filepath = os.path.normpath(os.path.join(app_dir, rel_path))
+        if not filepath.startswith(os.path.abspath(app_dir)):
+            self._send_404()
+            return
+        try:
+            with open(filepath, "rb") as f:
+                data = f.read()
+        except FileNotFoundError:
+            self._send_404()
+            return
+        ctype, _ = mimetypes.guess_type(filepath)
+        if not ctype:
+            ctype = "application/octet-stream"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", len(data))
+        # Vite emits hashed filenames → safe to long-cache.
+        if "/assets/" in rel_path.replace("\\", "/"):
+            self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+        else:
+            self.send_header("Cache-Control", "no-cache")
+        self._set_cors_headers()
+        self.end_headers()
+        self.wfile.write(data)
+
+    @staticmethod
+    def _app_file_exists(filename: str) -> bool:
+        return os.path.isfile(os.path.join(STATIC_DIR, "app", filename))
+
+    def _send_redirect(self, location: str, status: int = 302):
+        self.send_response(status)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self._set_cors_headers()
+        self.end_headers()
 
     def _serve_snapshot(self):
         snap = self.orch.snapshot

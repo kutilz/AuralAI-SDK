@@ -1,0 +1,1 @@
+const e="aural_token";function o(){try{return localStorage.getItem(e)||""}catch{return""}}function r(t){try{t?localStorage.setItem(e,t):localStorage.removeItem(e)}catch{}}async function c(){let t=o();if(t)return t;try{const n=await fetch("/auth/token");if(!n.ok)return"";t=(await n.json()).token||"",t&&r(t)}catch{}return t}export{c as e};

@@ -1,0 +1,3 @@
+{
+  "_comment": "Empty until English is translated. Falls back to id.json keys at runtime — see lib/i18n.ts lookup()."
+}
