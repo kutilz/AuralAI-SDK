@@ -3,6 +3,7 @@ Web Server — HTTP server yang serve dashboard dan API endpoints.
 Berjalan di Thread 2 (selalu aktif).
 """
 
+import ipaddress
 import json
 import os
 import signal
@@ -15,6 +16,24 @@ from functools import partial
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 _DEVICE_DIR = os.path.dirname(os.path.dirname(__file__))
+
+
+def _is_lan_peer(peer: str) -> bool:
+    """
+    True for loopback + RFC1918 + link-local addresses. Used to gate the
+    /auth/token handoff so any pendamping device on the same WiFi can
+    fetch the token without SSH'ing in, while still rejecting random
+    public IPs.
+    """
+    if not peer:
+        return False
+    if peer in ("127.0.0.1", "::1", "localhost"):
+        return True
+    try:
+        ip = ipaddress.ip_address(peer)
+    except ValueError:
+        return False
+    return ip.is_private or ip.is_loopback or ip.is_link_local
 
 
 # ─── Benchmark Runner ──────────────────────────────────────────────────────────
@@ -931,13 +950,20 @@ class AuralAIHandler(BaseHTTPRequestHandler):
 
     def _serve_auth_token(self):
         """
-        Return the device token. Localhost-only — so the dashboard served
-        from the device itself can pre-fill its auth header. Remote
-        clients must read /root/config.json directly (SSH) and paste in.
+        Return the device token so dashboard JS can pre-fill its auth
+        header. Allowed from:
+          - loopback (127.0.0.1, ::1)
+          - private LAN (RFC1918 + link-local) when on the same WiFi as the
+            device, which is the pilot/handoff topology — pendamping plugs
+            their laptop into the same WiFi the kacamata is on.
+
+        For production deployments where the device is reachable over a
+        wider network, tighten this via `cors_allowed_origins` and consider
+        moving the token out-of-band (printed sticker, QR on setup card).
         """
         peer = self.client_address[0] if self.client_address else ""
-        if peer not in ("127.0.0.1", "::1", "localhost"):
-            self._send_json({"error": "localhost only"}, 403)
+        if not _is_lan_peer(peer):
+            self._send_json({"error": "off-LAN access denied"}, 403)
             return
         from utils.auth import get_token, ensure_token
         token = get_token() or ensure_token(self.logger)
@@ -1158,7 +1184,31 @@ class AuralAIHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _send_404(self):
-        self._send_json({"error": "not found"}, 404)
+        accept = self.headers.get("Accept", "")
+        if "text/html" in accept:
+            html = (
+                "<!doctype html><html lang=\"id\"><head>"
+                "<meta charset=\"utf-8\">"
+                "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+                "<title>Halaman tidak ditemukan — AuralAI</title>"
+                "<style>body{font-family:system-ui,sans-serif;max-width:480px;"
+                "margin:80px auto;padding:0 20px;text-align:center;color:#1a1a2e}"
+                "h1{font-size:1.5rem;margin-bottom:.5rem}p{color:#555}"
+                "a{color:#4f46e5;text-decoration:none;font-weight:600}</style>"
+                "</head><body>"
+                "<h1>Halaman tidak ditemukan</h1>"
+                "<p>Alamat yang kamu cari tidak ada.</p>"
+                "<p><a href=\"/\">Kembali ke Beranda</a></p>"
+                "</body></html>"
+            ).encode("utf-8")
+            self.send_response(404)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(html)))
+            self._set_cors_headers()
+            self.end_headers()
+            self.wfile.write(html)
+        else:
+            self._send_json({"error": "not found"}, 404)
 
     def _send_error(self, exc: Exception, status: int = 500, context: str = ""):
         """Log full traceback + return error JSON. Use in handler except blocks."""

@@ -31,12 +31,22 @@ import signal
 import argparse
 import threading
 
+# Load .env dari project root kalau ada
+_env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
+if os.path.exists(_env_path):
+    with open(_env_path) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _v = _line.split("=", 1)
+                os.environ.setdefault(_k.strip(), _v.strip())
+
 # ─── Konfigurasi default ──────────────────────────────────────────────────────
 
-DEFAULT_HOST = "10.240.15.103"
-DEFAULT_PORT = 22
-DEFAULT_USER = "root"
-DEFAULT_PASS = "root"
+DEFAULT_HOST = os.environ.get("AURAL_MAIX_HOST", "maixcam.local")
+DEFAULT_PORT = int(os.environ.get("AURAL_MAIX_PORT", "22"))
+DEFAULT_USER = os.environ.get("AURAL_MAIX_USER", "root")
+DEFAULT_PASS = os.environ.get("AURAL_MAIX_PASS", "root")
 
 REMOTE_BASE   = "/root/aural-ai"
 REMOTE_DEVICE = "/root/aural-ai"
@@ -46,7 +56,7 @@ PROJECT_ROOT  = os.path.join(os.path.dirname(__file__), "..")
 DEVICE_DIR    = os.path.join(PROJECT_ROOT, "device")
 AUDIO_DIR     = os.path.join(PROJECT_ROOT, "audio")
 
-EXCLUDE_PATTERNS = {"__pycache__", ".pyc", ".pyo", ".DS_Store"}
+EXCLUDE_PATTERNS = {"__pycache__", ".pyc", ".pyo", ".DS_Store", "node_modules", ".git"}
 
 # ─── Definisi mode ────────────────────────────────────────────────────────────
 

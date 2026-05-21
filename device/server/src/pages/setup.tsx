@@ -142,6 +142,7 @@ function SetupApp() {
       <A11yBar />
       <main
         id="main"
+        tabIndex={-1}
         class="page"
         style={{ padding: "var(--s-8) var(--s-5)", maxWidth: 900 }}
       >

@@ -51,6 +51,7 @@ function CompanionApp() {
 
       <main
         id="main"
+        tabIndex={-1}
         style={{
           padding: "var(--s-5)",
           display: "grid",

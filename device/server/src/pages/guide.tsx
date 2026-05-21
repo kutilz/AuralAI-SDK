@@ -29,7 +29,7 @@ function GuideApp() {
       <SkipLink />
       <A11yBar />
 
-      <main id="main">
+      <main id="main" tabIndex={-1}>
         <Hero />
         <StoryboardSection />
         <HardwareSection />

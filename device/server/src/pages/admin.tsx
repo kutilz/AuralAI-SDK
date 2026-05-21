@@ -126,6 +126,7 @@ function AdminApp() {
 
       <main
         id="main"
+        tabIndex={-1}
         style={{
           padding: "var(--s-5)",
           maxWidth: 1600,
