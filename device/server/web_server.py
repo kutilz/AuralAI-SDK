@@ -9,7 +9,7 @@ import signal
 import subprocess
 import sys
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 from functools import partial
 
 
@@ -397,6 +397,19 @@ class AuralAIHandler(BaseHTTPRequestHandler):
         "/presets/apply",
     }
 
+    # Bootstrap mode — when setup_completed=False, these endpoints are needed
+    # by the first-time setup wizard but the pendamping has no way to get a
+    # token (the wizard runs from a remote browser, /auth/token is
+    # localhost-only). Auth is skipped for these paths until setup completes.
+    # Once setup_completed=True is persisted, the full auth gate engages.
+    _BOOTSTRAP_OPEN_POSTS = {
+        "/config",
+        "/ai-settings",
+        "/ai-settings/test",
+        "/ai-settings/secure",
+        "/presets/apply",
+    }
+
     def _set_cors_headers(self):
         from config import cfg as _cfg
         origins = _cfg.CORS_ALLOWED_ORIGINS
@@ -434,6 +447,12 @@ class AuralAIHandler(BaseHTTPRequestHandler):
         if path not in self._AUTH_REQUIRED_POSTS:
             return True
         if self._auth_ok():
+            return True
+        # Bootstrap exemption: setup wizard endpoints stay open until the
+        # device has been provisioned. This lets the pendamping finish the
+        # first-time wizard from a remote browser without juggling tokens.
+        from config import cfg as _cfg
+        if not _cfg.SETUP_COMPLETED and path in self._BOOTSTRAP_OPEN_POSTS:
             return True
         self._send_json(
             {"error": "unauthorized", "hint": "X-Auth-Token required"}, 401,
@@ -1171,6 +1190,10 @@ class WebServer:
                 f"Auth token init failed: {e}", module="WebServer", exc=e,
             )
         handler = partial(AuralAIHandler, self.orch, self.logger, self.data_collector)
-        server  = HTTPServer((self.host, self.port), handler)
+        # ThreadingHTTPServer: a slow handler (e.g. /snapshot during AI engine
+        # reload) no longer blocks unrelated polls. Daemon threads die with
+        # the server on shutdown.
+        server = ThreadingHTTPServer((self.host, self.port), handler)
+        server.daemon_threads = True
         self.logger.ok(f"Web server listening on {self.host}:{self.port}")
         server.serve_forever()

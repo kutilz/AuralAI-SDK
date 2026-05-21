@@ -65,14 +65,28 @@ export async function api<T = unknown>(
   }
   const res = await fetch(path, { ...opts, headers });
   if (!res.ok) {
-    let msg = res.statusText;
+    let serverMsg = res.statusText;
     try {
       const j = await res.json();
-      msg = j.error || j.message || msg;
+      serverMsg = j.error || j.message || serverMsg;
     } catch {
       /* ignore */
     }
-    throw new Error(`${res.status} ${msg}`);
+    // Indonesian-friendly mapping for the codes pendamping will actually
+    // see in the wizard. Keep the raw status/message in .cause for devs.
+    const friendly =
+      res.status === 401
+        ? "Belum tersambung ke kacamata. Coba muat ulang halaman ini."
+        : res.status === 403
+          ? "Akses ditolak oleh kacamata. Coba muat ulang halaman ini."
+          : res.status === 404
+            ? "Halaman atau data tidak ditemukan di kacamata."
+            : res.status >= 500
+              ? "Kacamata sedang bermasalah. Coba lagi sebentar."
+              : `${res.status} ${serverMsg}`;
+    const err = new Error(friendly);
+    (err as Error & { cause?: unknown }).cause = `${res.status} ${serverMsg}`;
+    throw err;
   }
   if (res.status === 204) return null as T;
   const ct = res.headers.get("content-type") || "";

@@ -422,9 +422,10 @@ function Step2({ s, setS }: { s: State; setS: (u: (c: State) => State) => void }
           style={fieldInput}
         />
         <small style={{ color: "var(--ink-3)", fontSize: "var(--t-sm)" }}>
-          WiFi disambungkan oleh operator lewat SSH untuk pilot ini. Field di
-          atas akan menulis ke wpa_supplicant.conf setelah endpoint scan WiFi
-          tersedia di server.
+          Catat dulu nama WiFi dan kata sandinya — kalau perangkat belum
+          tersambung, tim teknis akan menyambungkan secara manual saat serah
+          terima. Halaman ini akan menyimpan otomatis begitu fitur sambung
+          WiFi langsung sudah aktif.
         </small>
       </div>
     </>
@@ -658,9 +659,9 @@ function Step4({
               fontSize: "var(--t-sm)",
             }}
           >
-            Flag <code>setup_completed</code> di config akan diset
-            <code> true</code> dan halaman akan kembali ke beranda pendamping
-            (/). Wizard ini tetap bisa dibuka ulang dari menu Admin.
+            Pengaturan tersimpan dan kacamata siap dipakai pengguna. Halaman
+            akan kembali ke beranda pendamping. Wizard ini tetap bisa dibuka
+            ulang lewat menu Admin kalau perlu.
           </div>
         </div>
       </div>
