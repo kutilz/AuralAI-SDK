@@ -1,6 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 import { bootstrapA11y, saveA11y, type A11yState } from "../../lib/a11y";
-import { t } from "../../lib/i18n";
+import { t, getLang, setLang } from "../../lib/i18n";
 import { Icon } from "./Icon";
 
 /**
@@ -60,18 +60,13 @@ export function A11yBar() {
         checked={state.reduceMotion}
         onChange={(v) => set("reduceMotion", v)}
       />
-      {/*
-        Language switch lives here when en.json is populated.
-        Uncomment and ship in step C8 — see src/README.md.
-
-        <label style={{ marginLeft: "auto" }}>
-          <span class="sr-only">{t("a11y.title")} — Bahasa</span>
-          <select onChange={(e) => setLang((e.target as HTMLSelectElement).value as "id" | "en")} value={getLang()}>
-            <option value="id">Indonesia</option>
-            <option value="en">English</option>
-          </select>
-        </label>
-      */}
+      <label style={{ marginLeft: "auto" }}>
+        <span class="sr-only">{t("a11y.title")} — Language</span>
+        <select onChange={(e) => setLang((e.target as HTMLSelectElement).value as "id" | "en")} value={getLang()}>
+          <option value="id">Indonesia</option>
+          <option value="en">English</option>
+        </select>
+      </label>
     </div>
   );
 }
