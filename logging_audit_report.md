@@ -1,65 +1,65 @@
-# Audit Kualitas Logging: Analisis & Traceability - AuralAI SDK
+# Logging Quality Audit Report: Analysis & Traceability - AuralAI SDK
 
-## 1. Arsitektur Logging
+## 1. Logging Architecture
 
-### Implementasi Dasar
+### Core Implementation
 
-- **Lokasi:** `device/utils/logger.py`
-- **Format:** Structured JSON (menyimpan timestamp, level, module, message, dan metadata extra).
-- **Output:** Ganda (Konsol/Stdout + File di `/root/logs/aural_YYYYMMDD_HHMMSS.log`).
-- **Retensi:** Menggunakan `deque` dengan batas default 500 baris untuk buffer memori (Web UI stream).
+- **Location:** `device/utils/logger.py`
+- **Format:** Structured JSON (captures timestamp, level, module name, log message, and optional extra metadata).
+- **Outputs:** Dual-output (writes simultaneously to stdout/console and to physical log files under `/root/logs/aural_YYYYMMDD_HHMMSS.log`).
+- **Retention:** Employs a memory-buffered `deque` capped at 500 lines for live dashboard log streaming over WebSockets/HTTP.
 
-### Analisis Kualitas
+### Quality Analysis
 
-- **Positif:** 
-  - Struktur JSON memudahkan analisis otomatis di masa depan (misal: ELK stack atau script parser).
-  - Adanya metadata `module` memudahkan filtering log per komponen (AIEngine, Orchestrator, AudioMgr).
-  - Log file diputar (rotate) setiap kali aplikasi di-restart karena penamaan file menggunakan timestamp.
-
----
-
-## 2. Penanganan Error & Traceability (Kemampuan Analisis Anomali)
-
-### Kerentanan: Pengabaian Exception (Silent Failures)
-
-- **Temuan:** Ditemukan banyak pola `except Exception: pass` atau `except Exception as e: self.logger.error(f"Error: {e}")` tanpa menyertakan **Stack Trace**.
-- **Lokasi Contoh:** `device/core/ai_engine.py`, `device/core/audio_manager.py`, dan `device/server/web_server.py`.
-- **Dampak:** Jika terjadi error anomali (misal: `AttributeError` atau `TypeError` yang dalam), log hanya akan menampilkan pesan error singkat tanpa memberi tahu baris kode mana yang menyebabkan masalah. Ini membuat analisis "root cause" menjadi sangat sulit.
-
-### Konteks Operasional
-
-- **Temuan:** Log AI Engine sudah mencatat latency (camera, inference, total). Ini sangat baik untuk menganalisis anomali performa.
-- **Temuan:** Watchdog mencatat kejadian restart komponen. Ini krusial untuk mendeteksi komponen yang "flapping" (sering crash dan restart).
+- **Strengths:** 
+  - Structured JSON format simplifies automated analysis and log ingestion (e.g., for ELK stacks or log parsing scripts).
+  - The `module` metadata attribute makes it easy to filter logs by specific subcomponents (AIEngine, Orchestrator, AudioManager).
+  - Log files rotate (file rotation) on application restart since the filename includes a timestamp.
 
 ---
 
-## 3. Aksesibilitas Log
+## 2. Error Handling & Traceability (Anomaly Analysis)
 
-- **Web Dashboard:** Terdapat endpoint `GET /logs` yang mengembalikan 50 baris log terakhir dalam format JSON.
-- **File System:** Log tersimpan permanen di `/root/logs`.
-- **Risiko:** Tidak ada mekanisme pembersihan log lama secara otomatis (log rotation/cleanup). Seiring waktu, folder `/root/logs` dapat memenuhi penyimpanan internal MaixCAM.
+### Vulnerability: Suppressed Exceptions (Silent Failures)
 
----
+- **Findings:** Multiple instances of `except Exception: pass` or `except Exception as e: self.logger.error(f"Error: {e}")` were found where **Stack Traces** are completely omitted.
+- **Example Locations:** `device/core/ai_engine.py`, `device/core/audio_manager.py`, and `device/server/web_server.py`.
+- **Impact:** When a complex or unexpected error occurs (such as deep `AttributeError` or `TypeError` bugs), the log output only reports a brief error string without pinpointing the file and line number. This significantly hampers root-cause analysis.
 
-## 4. Ringkasan Audit Logging
+### Operational Context
 
-| Kriteria         | Status | Catatan                                                        |
-|:---------------- |:------ |:-------------------------------------------------------------- |
-| **Struktur**     | Baik   | Format JSON sangat modern dan terstruktur.                     |
-| **Konteks**      | Cukup  | Sudah ada module name, tapi kurang stack trace.                |
-| **Persistence**  | Cukup  | Tersimpan di file, tapi belum ada auto-cleanup.                |
-| **Traceability** | Kurang | Sulit melacak error kompleks karena minimnya detail exception. |
+- **Findings:** The AI Engine log correctly records latencies (camera frame capture, model inference, and total cycle time). This is excellent for diagnosing performance anomalies.
+- **Findings:** The Watchdog service logs restarts of individual components, which is critical for detecting component flapping (rapid crash-restart loops).
 
 ---
 
-## 5. Rekomendasi Perbaikan
+## 3. Log Accessibility
 
-1. **Integrasi `traceback`:** Pada blok `except Exception as e`, gunakan library `traceback` untuk mencatat stack trace lengkap ke log error, terutama di komponen kritikal seperti `AIEngine` dan `Adapters`.
-   - *Contoh:* `self.logger.error(f"Error: {e}\n{traceback.format_exc()}")`
-2. **Log Rotation/Cleanup:** Tambahkan logika untuk menghapus file log yang lebih tua dari X hari atau jika total ukuran log melebihi ambang batas tertentu untuk menjaga kesehatan disk.
-3. **Level Debugging:** Tambahkan flag `--debug` saat startup untuk mengaktifkan log level `DEBUG` (saat ini default ke `INFO`).
-4. **Audit Trail Kredensial:** Pastikan Logger tidak pernah mencatat API Key secara tidak sengaja (sudah dilakukan masking di Web Server, perlu dipastikan di logger util).
+- **Web Dashboard:** A `GET /logs` API endpoint returns the last 50 log lines in JSON format.
+- **Filesystem:** Log files are saved permanently in `/root/logs`.
+- **Risk:** There is no built-in log cleanup or auto-rotation mechanism. Over time, logs under `/root/logs` could fill up the MaixCAM's internal MicroSD card.
 
 ---
 
-*Laporan ini dihasilkan secara otomatis untuk audit kualitas logging AuralAI-SDK.*
+## 4. Logging Audit Summary
+
+| Criteria | Status | Notes |
+|:---|:---|:---|
+| **Structure** | Good | Modern and well-structured JSON format. |
+| **Context** | Fair | Includes module names, but lacks stack traces for exceptions. |
+| **Persistence** | Fair | Persists to disk, but lacks automated log pruning. |
+| **Traceability** | Poor | Difficult to debug complex crashes due to missing exception details. |
+
+---
+
+## 5. Recommendations
+
+1. **Integrate `traceback`:** Inside `except Exception` blocks, import and use the standard `traceback` library to write full stack traces to error logs, especially in critical components like `AIEngine` and `Adapters`.
+   - *Example:* `self.logger.error(f"Error: {e}\n{traceback.format_exc()}")`
+2. **Log Rotation/Cleanup:** Implement a background thread or routine to automatically delete log files older than X days, or prune logs when the directory size exceeds a safety threshold to maintain disk health.
+3. **Debug Log Level Support:** Add a `--debug` command-line argument to enable verbose `DEBUG` logs (currently hardcoded to default to `INFO`).
+4. **Credential Masking Audit:** Ensure the logger never accidentally records API keys or authentication tokens (dashboard config values are masked, but verify no raw dumps occur in debug statements).
+
+---
+
+*This report was automatically generated for the logging quality audit of AuralAI-SDK.*

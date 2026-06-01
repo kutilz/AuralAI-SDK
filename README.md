@@ -1,100 +1,100 @@
 # AuralAI SDK
 
-> Platform pengembangan on-device untuk asisten visual berbasis AI yang berjalan di **Sipeed MaixCAM**.  
-> Dirancang untuk membantu pengguna tunanetra mengenali lingkungan sekitar melalui audio.
+> On-device development platform for AI-powered visual assistants running on the **Sipeed MaixCAM**.  
+> Designed to help visually impaired users recognize their surroundings via audio.
 
 ---
 
-## Fitur
+## Features
 
-| Phase  | Fitur                                                                         | Status                                  |
+| Phase  | Feature                                                                       | Status                                  |
 | ------ | ----------------------------------------------------------------------------- | --------------------------------------- |
 | **0**  | Web Dashboard, Camera Preview, Log Stream                                     | ✅ Ready                                 |
-| **0b** | Companion PC (MaixCAM + Flask, MVP teruji)                                    | ✅ `companion/` + `device/aural_maix.py` |
+| **0b** | Companion PC (MaixCAM + Flask, tested MVP)                                    | ✅ `companion/` + `device/aural_maix.py` |
 | **1**  | Object Detection (YOLO11n COCO), Audio Output, Explorer Mode                  | ✅ Ready                                 |
 | **2**  | Scene Description (AI Vision), QRIS Verifier, Token Auth, Presets             | ✅ Ready                                 |
-| **3**  | TTS Hybrid, Log Rotation, Benchmark Suite, Data Collection, Audio Progress    | ✅ Ready                                 |
-| **4**  | Companion UI Redesign — `/` pendamping, `/admin`, `/guide`, `/setup`          | ✅ Ready                                 |
+| **3**  | Hybrid TTS, Log Rotation, Benchmark Suite, Data Collection, Audio Progress    | ✅ Ready                                 |
+| **4**  | Companion UI Redesign — `/` companion, `/admin`, `/guide`, `/setup`          | ✅ Ready                                 |
 
 ---
 
-## Arsitektur
+## Architecture
 
-**Jalur A — dashboard di MaixCAM** (`device/main.py`):
+**Path A — Dashboard on MaixCAM** (`device/main.py`):
 
 ```
 MaixCAM Device
 ├── Thread 1 — AI Loop      → Camera → YOLO Inference → Detection Queue
 └── Thread 2 — Web Server   → HTTP Dashboard + Snapshot Endpoint
                                         │
-                              Browser (HP / Laptop)
-                              AuralAI Dev Dashboard
+                               Browser (Phone / Laptop)
+                               AuralAI Dev Dashboard
 ```
 
-**Jalur B — Companion PC** (`device/aural_maix.py` + `companion/webserver.py`):
+**Path B — Companion PC** (`device/aural_maix.py` + `companion/webserver.py`):
 
 ```
-MaixCAM (UI layar + YOLO lokal) ──HTTP──► PC Flask (OpenAI Vision, MJPEG, TTS browser)
-                              └──► Browser observer (http://IP-PC:5000)
+MaixCAM (Screen UI + Local YOLO) ──HTTP──► PC Flask (OpenAI Vision, MJPEG, Browser TTS)
+                               └──► Browser observer (http://PC-IP:5000)
 ```
 
-Detail setup: [docs/setup.md](docs/setup.md) bagian *Companion PC* dan *Uji jaringan*.
+For setup details, see the *Companion PC* and *Network Testing* sections in [docs/setup.md](docs/setup.md).
 
 ---
 
 ## Quick Start
 
 ```bash
-# 1. Clone
+# 1. Clone the repository
 git clone https://github.com/<username>/AuralAI-SDK.git
 cd AuralAI-SDK
 
-# 2. Install PC deps
+# 2. Install PC dependencies
 pip install -r requirements_pc.txt
 
 # 3. Generate audio files
 python tools/generate_audio.py
 
-# 4. Deploy ke MaixCAM
+# 4. Deploy to MaixCAM
 python tools/deploy.py
 
-# 5. Akses dashboard
-# Buka browser → http://maixcam.local:8080
+# 5. Access the dashboard
+# Open your browser → http://maixcam.local:8080
 ```
 
-### Preview Mockup (Tanpa Hardware)
+### Preview Mockup (No Hardware Required)
 
-Buka `device/server/static/index.html` langsung di browser — dashboard berjalan penuh dalam mode simulasi.
+Open `device/server/static/index.html` directly in your browser — the dashboard runs fully in simulation mode.
 
-### Companion PC (MVP + OpenAI di PC)
+### Companion PC (MVP + OpenAI on PC)
 
 ```bash
 pip install -r requirements_pc.txt
-cp companion/.env.example companion/.env   # Windows: copy ...
-# Edit companion/.env — isi OPENAI_API_KEY
+cp companion/.env.example companion/.env   # On Windows: copy companion\.env.example companion\.env
+# Edit companion/.env and fill in your OPENAI_API_KEY
 python companion/webserver.py
-python companion/run_desktop.py            # opsional: simulasi webcam
+python companion/run_desktop.py            # Optional: Simulate with webcam
 ```
 
-Di MaixCAM set `AURAL_COMPANION_HOST` ke **IPv4 Wi‑Fi/Ethernet PC** (bukan IP WSL), lalu `python aural_maix.py` — lihat [docs/setup.md](docs/setup.md).
+On your MaixCAM, set `AURAL_COMPANION_HOST` to your **PC's IPv4 address** (Wi‑Fi/Ethernet, not WSL IP), then run `python aural_maix.py` — see [docs/setup.md](docs/setup.md) for details.
 
 ---
 
-## Struktur Project
+## Project Structure
 
 ```
 aural-ai-sdk/
-├── companion/                # Server PC + runner desktop (MVP)
-│   ├── webserver.py          # Flask + dashboard + API untuk device
-│   ├── minimal_server.py     # Uji koneksi MaixCAM ↔ PC (tanpa OpenAI)
-│   ├── run_desktop.py        # Simulasi MaixCAM dengan webcam
+├── companion/                # PC-side server + desktop runner (MVP)
+│   ├── webserver.py          # Flask + dashboard + API for device
+│   ├── minimal_server.py     # Connection test: MaixCAM ↔ PC (without OpenAI)
+│   ├── run_desktop.py        # Simulate MaixCAM using a webcam
 │   └── .env.example
-├── device/                   # Kode untuk MaixCAM (Python/MaixPy)
-│   ├── main.py               # Entry point
-│   ├── aural_maix.py         # Entry alternatif: UI + YOLO + hub ke companion
-│   ├── wifi_connect.py       # Helper WiFi (pola resmi MaixPy, dipakai probe + aural_maix)
-│   ├── network_probe.py      # Uji HTTP ke PC (pakai dengan minimal_server)
-│   ├── config.py             # Semua konstanta
+├── device/                   # Code for MaixCAM (Python/MaixPy)
+│   ├── main.py               # Main entry point
+│   ├── aural_maix.py         # Alternative entry: UI + YOLO + companion hub
+│   ├── wifi_connect.py       # WiFi helper (official MaixPy pattern, used by probe & aural_maix)
+│   ├── network_probe.py      # HTTP connection test to PC (used with minimal_server)
+│   ├── config.py             # Configuration constants
 │   ├── core/
 │   │   ├── orchestrator.py   # State machine, shared state
 │   │   ├── ai_engine.py      # Camera + inference
@@ -104,21 +104,21 @@ aural-ai-sdk/
 │   │   └── context_mode.py   # Online OpenAI mode
 │   ├── server/
 │   │   ├── web_server.py     # HTTP server
-│   │   ├── routes.py         # API endpoints (doc only)
-│   │   ├── static/           # Static files
-│   │   │   ├── index.html    # Dashboard operator lama (served at /admin/legacy)
-│   │   │   ├── tokens.css    # Design tokens — sumber tunggal
-│   │   │   └── app/          # Hasil `vite build` (committed)
-│   │   └── src/              # Preact + Vite source untuk /, /admin, /guide, /setup
+│   │   ├── routes.py         # API endpoints (documentation only)
+│   │   ├── static/           # Static assets
+│   │   │   ├── index.html    # Old operator dashboard (served at /admin/legacy)
+│   │   │   ├── tokens.css    # Design tokens — single source of truth
+│   │   │   └── app/          # Output of `vite build` (committed to repo)
+│   │   └── src/              # Preact + Vite source for /, /admin, /guide, /setup
 │   └── utils/
 │       ├── logger.py
 │       └── latency_tester.py
-├── tools/                    # Script PC-side
-│   ├── generate_audio.py     # Pre-generate WAV via gTTS
-│   ├── deploy.py             # SCP deploy ke MaixCAM
+├── tools/                    # PC-side scripts
+│   ├── generate_audio.py     # Pre-generate WAV files via gTTS
+│   ├── deploy.py             # SCP deploy tool for MaixCAM
 │   └── model_converter.py    # Model helper (Phase 3)
-├── models/                   # Model files (tidak di-commit)
-├── audio/                    # Generated WAV (tidak di-commit)
+├── models/                   # Model files (not committed)
+├── audio/                    # Generated WAV files (not committed)
 ├── docs/
 │   └── setup.md
 ├── requirements_pc.txt
@@ -129,64 +129,63 @@ aural-ai-sdk/
 
 ## API Endpoints
 
-### Halaman (Phase 4 redesign)
+### Pages (Phase 4 Redesign)
 
-| Method | Endpoint        | Fungsi                                            | Auth |
-| ------ | --------------- | ------------------------------------------------- | ---- |
-| `GET`  | `/`             | Companion dashboard (redirect ke `/setup` saat first-time) | optional |
-| `GET`  | `/admin`        | Admin dashboard (companion + dev sidebar)         | `device_token` (atau `admin_role_token` kalau di-set) |
-| `GET`  | `/guide`        | Panduan publik                                    | none |
-| `GET`  | `/setup`        | Setup wizard 4 langkah                            | optional |
-| `GET`  | `/admin/legacy` | Operator dashboard lama (fallback debug)          | optional |
-| `GET`  | `/tokens.css`   | Design tokens (sumber tunggal)                    | none |
-| `GET`  | `/app/<...>`    | Hashed JS/CSS dari Vite build                     | none |
+| Method | Endpoint        | Function                                           | Auth |
+| ------ | --------------- | -------------------------------------------------- | ---- |
+| `GET`  | `/`             | Companion dashboard (redirects to `/setup` on first-time launch) | Optional |
+| `GET`  | `/admin`        | Admin dashboard (companion + dev sidebar)         | `device_token` (or `admin_role_token` if set) |
+| `GET`  | `/guide`        | Public user guide                                  | None |
+| `GET`  | `/setup`        | 4-step setup wizard                                | Optional |
+| `GET`  | `/admin/legacy` | Old operator dashboard (fallback debug page)       | Optional |
+| `GET`  | `/tokens.css`   | Design tokens (single source of truth)             | None |
+| `GET`  | `/app/<...>`    | Hashed JS/CSS from Vite build                      | None |
 
 ### Data API
 
-| Method | Endpoint                          | Fungsi                                              |
+| Method | Endpoint                          | Function                                            |
 | ------ | --------------------------------- | --------------------------------------------------- |
-| `GET`  | `/snapshot`                       | JPEG frame terbaru                                  |
+| `GET`  | `/snapshot`                       | Latest JPEG frame                                   |
 | `GET`  | `/status`                         | JSON: mode, detections, latency, battery, wifi, audio_mode, last_caption, setup_completed |
-| `GET`  | `/logs`                           | Log terbaru (50 baris)                              |
-| `GET`  | `/history?date=today`             | Activity feed untuk dashboard pendamping            |
+| `GET`  | `/logs`                           | Latest log lines (last 50 lines)                    |
+| `GET`  | `/history?date=today`             | Activity feed for companion dashboard               |
 | `GET`  | `/health`                         | Hardware health metrics                             |
-| `GET`  | `/audio/{file}`                   | Serve WAV file                                      |
-| `GET`  | `/audio/chimes/manifest.json`     | Daftar chime yang tersedia                          |
-| `GET`  | `/assets/manifest.json`           | Daftar foto asset                                   |
-| `GET`  | `/assets/{name}`                  | Serve foto asset (fallback ke SVG mockup di UI)     |
+| `GET`  | `/audio/{file}`                   | Serves WAV files                                    |
+| `GET`  | `/audio/chimes/manifest.json`     | List of available chimes                            |
+| `GET`  | `/assets/manifest.json`           | List of photo assets                                |
+| `GET`  | `/assets/{name}`                  | Serves photo assets (falls back to mock SVG in UI)  |
 | `POST` | `/command`                        | `{"cmd": "focus"\|"capture"\|"qris"\|"describe"\|"set_mode"}` |
-| `POST` | `/config`                         | Update config (audio_volume, audio_mode, setup_completed, dll) |
+| `POST` | `/config`                         | Updates config (audio_volume, audio_mode, setup_completed, etc) |
 
 ---
 
-## Build UI
+## UI Development
 
-Source UI ada di `device/server/src/` (Preact + Vite). Output build di-commit ke
-`device/server/static/app/` karena MaixCAM tidak punya Node.js.
+The UI source code is located in `device/server/src/` (built with Preact + Vite). The build output is committed to `device/server/static/app/` because the MaixCAM device does not run Node.js.
 
 ```bash
 cd device/server/src
-npm install                 # sekali
-npm run build               # menghasilkan ../static/app/{companion,admin,guide,setup}.html + assets/
-npm run dev                 # dev server di http://localhost:5173 (proxy /status, /snapshot, dll ke localhost:8080)
+npm install                 # Run once
+npm run build               # Generates ../static/app/{companion,admin,guide,setup}.html + assets/
+npm run dev                 # Dev server on http://localhost:5173 (proxies /status, /snapshot, etc. to localhost:8080)
 ```
 
-Setelah `npm run build`, commit ulang folder `static/app/` bersama perubahan source.
-Detail + cara menambah bahasa Inggris: lihat [`device/server/src/README.md`](device/server/src/README.md).
+After running `npm run build`, commit the `static/app/` directory alongside your source changes.
+For details on adding English language translations, refer to [`device/server/src/README.md`](device/server/src/README.md).
 
 ---
 
-## Konfigurasi
+## Configuration
 
-Edit `device/config.py` sebelum deploy:
+Edit `device/config.py` before deploying:
 
 ```python
 MODEL_PATH        = "/root/models/yolo11n.mud"
 CONF_THRESHOLD    = 0.5
 CAMERA_FPS        = 30
 WEB_PORT          = 8080
-AI_FOCUS_DURATION = 5        # detik
-AUDIO_COOLDOWN_S  = 2.0      # jeda antar audio sama
+AI_FOCUS_DURATION = 5        # seconds
+AUDIO_COOLDOWN_S  = 2.0      # cooldown between identical audio cues
 OPENAI_MODEL      = "gpt-4o-mini"
 ```
 
@@ -194,17 +193,17 @@ OPENAI_MODEL      = "gpt-4o-mini"
 
 ## Hardware
 
-- **Device:** Sipeed MaixCAM (regular)
-- **Camera:** Built-in (320×224, RGB888)
-- **Network:** WiFi (HTTP server port 8080)
-- **Storage:** SD Card untuk model, audio, dan logs
+- **Device:** Sipeed MaixCAM (regular variant)
+- **Camera:** Built-in sensor (320×224 resolution, RGB888 format)
+- **Network:** WiFi connection (HTTP server running on port 8080)
+- **Storage:** MicroSD card for models, audio files, and system logs
 
 ---
 
-## Lisensi
+## License
 
-MIT License — bebas digunakan dan dimodifikasi.
+MIT License — free to use, modify, and distribute.
 
 ---
 
-> Lihat [docs/setup.md](docs/setup.md) untuk panduan instalasi lengkap.
+> Refer to [docs/setup.md](docs/setup.md) for the complete setup guide.

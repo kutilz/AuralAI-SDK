@@ -1,223 +1,223 @@
 # AuralAI — Operator Runbook (Draft Outline)
 
-> Dokumen ini adalah **outline kasar** untuk panduan operator yang akan kamu tulis lengkap nanti.
-> Setiap bagian berisi poin-poin yang perlu dikembangkan menjadi prosedur lengkap.
+> This document is a **rough outline** for the operator guide that you will fully develop later.
+> Each section contains bullet points that need to be expanded into complete procedures.
 
 ---
 
-## 1. Apa itu AuralAI?
+## 1. What is AuralAI?
 
-- Asisten visual on-device untuk pengguna tunanetra
-- Hardware: Sipeed MaixCAM dengan speaker internal
-- Tiga mode utama: Explorer (deteksi objek), Scene (deskripsi AI), QRIS (scan bayar)
-- Operator = pendamping pilot; pengguna = user tunanetra
-- Dashboard web (`http://<ip-device>:8080`) untuk operator — bukan untuk pengguna
-
----
-
-## 2. Persiapan Sebelum Pakai
-
-### 2.1 Checklist Sebelum Diserahkan ke User
-
-- [ ] Device sudah terhubung ke WiFi jaringan user
-- [ ] API key sudah di-set via dashboard
-- [ ] Audio test: device memutar "AuralAI siap" saat boot
-- [ ] Mode Explorer jalan: objek terdeteksi → suara keluar
-- [ ] Volume speaker cukup keras di lingkungan user (test pakai dB meter atau perkiraan)
-- [ ] Baterai/power supply sudah terpasang
-- [ ] config.json sudah disimpan ke backup
-
-### 2.2 Setup API Key
-
-1. Buka dashboard → menu AI Settings
-2. Pilih provider (OpenAI / Gemini / Claude)
-3. Masukkan API key → klik Save
-4. Klik "Test Connection" — harus muncul respons AI
-5. Catat token autentikasi dashboard di catatan operator (jangan bagikan ke user)
+- An on-device visual assistant for visually impaired users.
+- Hardware: Sipeed MaixCAM with built-in speaker.
+- Three main modes: Explorer (object detection), Scene (AI description), QRIS (payment scanning).
+- Operator = caregiver/companion assisting the user; User = visually impaired individual.
+- Web dashboard (`http://<device-ip>:8080`) is for the operator's use — not for the user.
 
 ---
 
-## 3. Cara Boot Device
+## 2. Pre-use Preparation
 
-- Sambungkan power → device boot otomatis (~30 detik)
-- Tanda siap: suara "AuralAI siap digunakan" dari speaker
-- Jika tidak ada suara dalam 60 detik → cek bagian Troubleshoot
+### 2.1 Checklist Before Handing Over to the User
 
-### Indikator Audio Status
+- [ ] Device is connected to the user's WiFi network.
+- [ ] API key has been set via the dashboard.
+- [ ] Audio test: Device plays "AuralAI ready" upon boot.
+- [ ] Explorer mode check: Objects are detected → audio alerts play.
+- [ ] Speaker volume is sufficiently loud for the user's environment.
+- [ ] Battery / power supply is securely attached.
+- [ ] config.json has been backed up.
 
-| Suara yang Terdengar              | Artinya                            |
+### 2.2 API Key Setup
+
+1. Open the dashboard → go to the AI Settings menu.
+2. Select the provider (OpenAI / Gemini / Claude).
+3. Enter the API key → click Save.
+4. Click "Test Connection" — a successful AI response must return.
+5. Record the dashboard authentication token in the operator's notes (do not share with the user).
+
+---
+
+## 3. How to Boot the Device
+
+- Connect power → the device boots automatically (~30 seconds).
+- Ready indicator: Audio cue "AuralAI siap digunakan" (AuralAI is ready for use) plays from the speaker.
+- If no audio is heard within 60 seconds → refer to the Troubleshooting section.
+
+### Audio Status Indicators
+
+| Heard Sound                       | Meaning                            |
 | --------------------------------- | ---------------------------------- |
-| "AuralAI siap digunakan"          | Boot sukses, siap dipakai          |
-| "Mode penjelajah aktif"           | Masuk Explorer Mode                |
-| "Mode konteks aktif"              | Masuk Scene Mode                   |
-| "Mode scan bayar aktif"           | Masuk QRIS Mode                    |
-| "Sedang menganalisis"             | AI Vision sedang memproses         |
-| "Masih memproses"                 | AI masih bekerja, harap tunggu     |
-| "Koneksi gagal"                   | Internet tidak tersedia            |
-| "Gagal menganalisis"              | AI tidak bisa memproses permintaan |
-| "Baterai lemah"                   | Segera isi daya                    |
-| "Perangkat terlalu panas"         | Butuh pendinginan, kurangi pemakaian |
+| "AuralAI siap digunakan"          | Boot successful, ready for use     |
+| "Mode penjelajah aktif"           | Entered Explorer Mode              |
+| "Mode konteks aktif"              | Entered Scene Mode                 |
+| "Mode scan bayar aktif"           | Entered QRIS Mode                  |
+| "Sedang menganalisis"             | AI Vision is processing            |
+| "Masih memproses"                 | AI is still working, please wait   |
+| "Koneksi gagal"                   | Internet connection is unavailable |
+| "Gagal menganalisis"              | AI failed to process request       |
+| "Baterai lemah"                   | Low battery, charge immediately    |
+| "Perangkat terlalu panas"         | Device is overheating              |
 
 ---
 
-## 4. Mode Operasi
+## 4. Operating Modes
 
-### 4.1 Explorer Mode (default)
+### 4.1 Explorer Mode (Default)
 
-- Aktif saat boot
-- Kamera mendeteksi objek secara realtime (YOLO)
-- Objek berbahaya (dekat) → suara CRITICAL priority (interupsi audio lain)
-- Objek biasa → suara HIGH priority
+- Active upon boot.
+- Camera detects objects in real-time (YOLO).
+- Hazardous objects (near range) → play CRITICAL priority audio (interrupts other audio).
+- General objects → play HIGH priority audio.
 
 ### 4.2 Scene Mode
 
-- Tombol fisik atau perintah dashboard → pindah ke Scene
-- User tekan tombol → AI Vision deskripsikan pemandangan dalam Bahasa Indonesia
-- Butuh koneksi internet
-- Respons ~3-8 detik (audio progress tiap 3 detik selama menunggu)
+- Triggered via physical button or dashboard command → switches to Scene Mode.
+- User presses button → AI Vision describes the scene in Indonesian.
+- Requires active internet connection.
+- Response time ~3-8 seconds (audio progress plays every 3 seconds while waiting).
 
 ### 4.3 QRIS Mode
 
-- Aktif saat user mau scan kode pembayaran
-- Default hybrid: local decoder + AI cross-check
-- Hasil: "MERCHANT: [nama], NOMINAL: [angka]"
-- Jika nominal > 1 juta IDR → minta konfirmasi ulang (safety cap)
+- Active when the user wishes to scan payment codes.
+- Default hybrid mode: Local decoder + AI cross-check.
+- Output: "MERCHANT: [name], NOMINAL: [amount]".
+- If nominal amount > 1 million IDR → prompts for confirmation (safety cap).
 
-### 4.4 Ganti Mode
+### 4.4 Switching Modes
 
-- Via tombol fisik (konfigurasi pin di dashboard → Hardware Settings)
-- Via dashboard → tombol mode switch
-- Mode berputar: Explorer → Scene → QRIS → Explorer
+- Via physical button (configure pins in Dashboard → Hardware Settings).
+- Via web dashboard → mode switch button.
+- Mode cycle: Explorer → Scene → QRIS → Explorer.
 
 ---
 
 ## 5. Web Dashboard
 
-- URL: `http://<ip-maixcam>:8080`
-- IP bisa dicek dari layar MaixCAM atau router
-- Login dengan token (lihat `/root/config.json` key `device_token` untuk token awal)
-- **Dashboard HANYA untuk operator/dev** — audio tetap via speaker device
+- URL: `http://<maixcam-ip>:8080`
+- Check IP address via MaixCAM screen or router dashboard.
+- Log in with the access token (see `/root/config.json` key `device_token` for initial token).
+- **Dashboard is ONLY for operators/devs** — audio output still routes through the device speaker.
 
-### Fitur Dashboard
+### Dashboard Features
 
-- **Camera preview** — live feed kamera
-- **Status bar** — mode aktif, FPS, suhu CPU, RAM
-- **Log stream** — real-time log dari device
-- **AI Settings** — ganti provider, API key, prompt
-- **Presets** — switch konfigurasi cepat (Explorer/Scene/QRIS preset)
-- **Health** — metrik hardware (suhu, disk, RAM)
-- **I2C Probe** — cek battery HAT (POST `/i2c-probe`)
-
----
-
-## 6. Troubleshoot WiFi
-
-| Gejala                    | Langkah                                                       |
-| ------------------------- | ------------------------------------------------------------- |
-| Tidak ada suara "siap"    | Cek power, tunggu 60 detik, reboot                            |
-| Dashboard tidak bisa dibuka | Cek IP device, pastikan di WiFi yang sama                   |
-| "Koneksi gagal"           | Cek WiFi password, cek sinyal, reboot router                  |
-| IP berubah tiap reboot    | Set static IP di router (MAC reservation)                     |
-| Butuh 4G backup           | Gunakan hotspot HP, sambungkan device ke SSID hotspot         |
+- **Camera preview** — live camera feed.
+- **Status bar** — active mode, FPS, CPU temperature, RAM usage.
+- **Log stream** — real-time logs from the device.
+- **AI Settings** — change provider, API key, custom prompt.
+- **Presets** — quick switch between preset configurations (Explorer/Scene/QRIS preset).
+- **Health** — hardware metrics (temperature, disk, RAM).
+- **I2C Probe** — checks battery HAT status (POST `/i2c-probe`).
 
 ---
 
-## 7. Troubleshoot Audio Tidak Keluar
+## 6. WiFi Troubleshooting
 
-1. Cek volume di dashboard (AI Settings → Audio Volume, default 80)
-2. Cek apakah mode aktif (log harus ada deteksi objek)
-3. Cek log untuk error "Audio fallback" → berarti WAV tidak ditemukan
-4. Regenerate audio files: `python tools/generate_audio.py --from-wordlist`
-5. Deploy ulang: `python tools/deploy.py --audio-only`
-6. Cek speaker fisik (test dengan file audio lain langsung di device)
+| Symptom                   | Steps |
+| ------------------------- | ----- |
+| No "ready" audio          | Check power source, wait 60 seconds, reboot. |
+| Dashboard won't open      | Check device IP address, ensure you are on the same WiFi network. |
+| "Connection failed"       | Check WiFi password, check signal strength, reboot router. |
+| IP changes on every boot  | Set static IP in router settings (DHCP MAC reservation). |
+| Needs 4G backup           | Set up phone mobile hotspot, connect device to hotspot SSID. |
 
 ---
 
-## 8. Cara Baca Log
+## 7. Troubleshooting No Sound Output
 
-- Dari dashboard: menu Logs → real-time stream
-- Di device: `/root/logs/aural_*.log` (rotasi otomatis 7 hari / 100MB)
-- Format: `[TIMESTAMP] [LEVEL] [MODULE] message`
-- TTS cache: `/root/audio/tts_cache/` — file WAV dari synthesis runtime
+1. Check volume level in the dashboard (AI Settings → Audio Volume, default 80).
+2. Check if a mode is active (logs should register object detections).
+3. Check logs for "Audio fallback" errors → indicates missing WAV files.
+4. Regenerate audio files: `python tools/generate_audio.py --from-wordlist`.
+5. Re-deploy audio files: `python tools/deploy.py --audio-only`.
+6. Verify physical speaker (test with another audio file directly on the device).
 
-### Level Log
+---
 
-| Level | Arti                                        |
+## 8. Reading System Logs
+
+- From the dashboard: Logs menu → real-time log stream.
+- On the device: `/root/logs/aural_*.log` (auto-rotated: 7 days or 100MB limit).
+- Log Format: `[TIMESTAMP] [LEVEL] [MODULE] message`
+- TTS Cache: `/root/audio/tts_cache/` — stores WAV files from runtime synthesis.
+
+### Log Levels
+
+| Level | Meaning                                     |
 | ----- | ------------------------------------------- |
-| OK    | Operasi berhasil                            |
-| INFO  | Informasi normal                            |
-| WARN  | Peringatan (masih berjalan)                 |
-| ERROR | Gagal, perlu perhatian                      |
-| FATAL | Crash — device mungkin restart              |
+| OK    | Operation successful                        |
+| INFO  | General system information                  |
+| WARN  | Warning (system remains functional)         |
+| ERROR | Failed operation, attention required        |
+| FATAL | Critical crash — device recovery or reboot |
 
 ---
 
-## 9. Cara Reset Device
+## 9. Resetting the Device
 
-### Soft Reset (restart aplikasi)
+### Soft Reset (Restart Application Service)
 
-- Dashboard → tombol Restart Service
-- Atau SSH: `systemctl restart aural-ai`
+- Dashboard → click Restart Service.
+- Or via SSH: `systemctl restart aural-ai`
 
-### Hard Reset (reboot device)
+### Hard Reset (Reboot Hardware)
 
-- Cabut-colok power (aman, watchdog akan recovery)
-- Atau SSH: `reboot`
+- Power cycle the device (unplug and replug; watchdog handles recovery).
+- Or via SSH: `reboot`
 
 ### Factory Reset Config
 
 ```bash
-# Di device via SSH:
+# On device via SSH:
 rm /root/config.json
 reboot
-# Config akan regenerate dari defaults
+# Config file will regenerate with defaults
 ```
 
-### Backup Config
+### Backup Configuration
 
 ```bash
-# Di PC:
-scp root@<ip-maixcam>:/root/config.json ./backup_config_$(date +%Y%m%d).json
+# On PC:
+scp root@<maixcam-ip>:/root/config.json ./backup_config_$(date +%Y%m%d).json
 ```
 
 ---
 
-## 10. Maintenance Rutin
+## 10. Routine Maintenance
 
-| Frekuensi   | Tugas                                                         |
+| Frequency | Task |
 | ----------- | ------------------------------------------------------------- |
-| Setiap hari | Cek dashboard log sebentar, pastikan tidak ada FATAL          |
-| Mingguan    | Cek disk usage (`/root/logs/` dan `/root/audio/tts_cache/`)   |
-| Per sprint  | Backup config.json dari semua device                          |
-| Per event   | Pastikan WiFi stabil sebelum user pakai, test mode QRIS       |
+| Daily | Brief check of dashboard logs to verify no FATAL errors occur. |
+| Weekly | Monitor disk usage (`/root/logs/` and `/root/audio/tts_cache/`). |
+| Per sprint | Back up config.json from all deployed devices. |
+| Per event | Ensure WiFi stability before handing over, test QRIS mode. |
 
-> Log rotation sudah otomatis (7 hari / 100MB). TTS cache tidak ada batas otomatis — trim manual jika disk penuh.
-
----
-
-## 11. Logbook Lapangan
-
-Minta setiap operator catat di buku/form digital:
-
-- Tanggal & waktu kejadian
-- User ID (anonim: U1, U2, ...)
-- Mode yang aktif
-- Apa yang terjadi (suara yang terdengar / tidak terdengar)
-- Tindakan yang diambil
-- Apakah resolved
-
-Data logbook ini untuk laporan IEEE post-pilot.
+> Log rotation runs automatically (7 days / 100MB). TTS cache does not auto-delete — prune manually if disk becomes full.
 
 ---
 
-## 12. Kontak & Eskalasi
+## 11. Field Logbook
 
-| Situasi                     | Tindakan                                            |
+Require each operator to document logs in a notebook or digital form:
+
+- Date & time of event.
+- User ID (anonymous: U1, U2, etc.).
+- Active operating mode.
+- System behavior (audio cues heard vs expected).
+- Action taken by operator.
+- Whether the issue was resolved.
+
+This logbook data is collected for post-pilot IEEE research reports.
+
+---
+
+## 12. Contacts & Escalation
+
+| Situation | Action |
 | --------------------------- | --------------------------------------------------- |
-| Bug ringan                  | Catat di logbook, lanjutkan                         |
-| Device tidak bisa dipakai   | Soft reset → hard reset → hubungi dev               |
-| Data user bocor (foto/log)  | Matikan device, hubungi dev segera                  |
-| User mengeluh info salah    | Catat detail, switch ke offline mode, hubungi dev   |
+| Minor bug | Record in logbook, proceed with operation. |
+| Device unusable | Soft reset → hard reset → contact development team. |
+| User data leak (photo/log)  | Power off device immediately, contact dev team. |
+| User reports incorrect info | Note details, switch to offline mode, contact dev. |
 
-> **Dev contact:** [isi nama/kontak developer]
-> **Repo:** `github.com/<username>/AuralAI-SDK`
+> **Dev contact:** [Fill in developer name/contact info]  
+> **Repository:** `github.com/<username>/AuralAI-SDK`

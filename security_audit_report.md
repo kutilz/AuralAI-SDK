@@ -1,81 +1,81 @@
-# Audit Keamanan Sistem: Hardware & Software - AuralAI SDK
+# System Security Audit Report: Hardware & Software - AuralAI SDK
 
-## 1. Keamanan Jaringan & Web Server
+## 1. Network & Web Server Security
 
-### Kerentanan Utama: Tidak Ada Autentikasi
+### Primary Vulnerability: Lacking Authentication
 
-- **Lokasi:** `device/server/web_server.py`
-- **Temuan:** Seluruh endpoint API (`/config`, `/command`, `/ai-settings`, `/suite/start`) terbuka secara publik tanpa memerlukan login atau token. 
-- **Risiko:** 
-  - Penyerang di jaringan yang sama dapat mengontrol perangkat sepenuhnya.
-  - Pengubahan konfigurasi API Key (`POST /ai-settings`) dapat mencuri kredit cloud (OpenAI/Gemini/Claude) milik pengguna.
-  - Remote Code Execution (RCE) potensial melalui trigger benchmark yang menjalankan subprocess.
+- **Location:** `device/server/web_server.py`
+- **Findings:** All API endpoints (`/config`, `/command`, `/ai-settings`, `/suite/start`) were historically open to the local network without requiring login or token authentication.
+- **Risks:** 
+  - Anyone on the same network could fully control the device.
+  - Modifying the AI provider settings (`POST /ai-settings`) could leak or exhaust the caregiver's cloud credits (OpenAI/Gemini/Claude).
+  - Potential Remote Code Execution (RCE) via benchmark endpoints that trigger system processes.
 
-### Keamanan Data (CORS)
+### Data Security (CORS)
 
-- **Temuan:** Header `Access-Control-Allow-Origin: *` diaktifkan untuk semua response.
-- **Risiko:** Cross-Site Request Forgery (CSRF). Website berbahaya yang dikunjungi oleh pengguna di browser yang sama dapat mengirimkan request ke IP lokal MaixCAM dan mengubah setting tanpa sepengetahuan pengguna.
-
----
-
-## 2. Keamanan Sistem Operasi (Software)
-
-### Eksekusi Subprocess & Shell
-
-- **Lokasi:** `device/server/web_server.py` (BenchmarkRunner, StressRunner, BenchmarkSuiteRunner).
-- **Temuan:** Penggunaan `subprocess.Popen` untuk menjalankan script Python. Meskipun argumen saat ini terlihat statis, tidak adanya autentikasi pada endpoint pemanggil membuatnya berbahaya.
-- **Lokasi Lain:** `device/core/audio_manager.py` menggunakan `os.system()` untuk konversi audio via FFmpeg.
-- **Risiko:** Jika input nama file audio dapat dikontrol oleh pengguna (melalui prompt injection atau config), penyerang dapat menyuntikkan perintah shell (Command Injection).
-
-### Manajemen File & Kredensial
-
-- **Lokasi:** `/root/config.json`
-- **Temuan:** Kredensial (API Keys) disimpan dalam format teks polos (plain text) di dalam file JSON. 
-- **Risiko:** Siapapun dengan akses fisik atau akses shell ke perangkat dapat membaca API Key tersebut.
+- **Findings:** The header `Access-Control-Allow-Origin: *` was enabled globally for all responses.
+- **Risks:** Cross-Site Request Forgery (CSRF). A malicious website visited by a user on the same browser could send unauthorized HTTP requests to the MaixCAM's local IP address and modify configuration parameters silently.
 
 ---
 
-## 3. Keamanan Hardware & Fisik
+## 2. Operating System (Software) Security
 
-### Akses GPIO
+### Subprocess & Shell Execution
 
-- **Lokasi:** `device/core/orchestrator.py`
-- **Temuan:** Perangkat mendengarkan input dari tombol fisik (`button_pin_mode`). 
-- **Analisis:** Secara desain, ini adalah fitur. Namun, jika PIN GPIO terekspos secara fisik, "tombol" ini bisa dipicu secara elektrik untuk mengubah mode perangkat ke mode yang tidak diinginkan.
+- **Location:** `device/server/web_server.py` (BenchmarkRunner, StressRunner, BenchmarkSuiteRunner).
+- **Findings:** Employs `subprocess.Popen` to run Python scripts. While the arguments are statically defined, the lack of authentication on the calling endpoints makes this execution pattern risky.
+- **Other Locations:** `device/core/audio_manager.py` uses `os.system()` to convert audio files via FFmpeg.
+- **Risks:** If audio filenames can be influenced by users (via prompt injection or configuration inputs), an attacker could perform command injection by writing shell metacharacters (e.g., `;`, `&`, `|`, `$`).
 
-### Manajemen Termal & Stabilitas
+### File Management & Credentials
 
-- **Lokasi:** `device/utils/health.py` dan `device/core/watchdog.py`
-- **Temuan:** Sudah terdapat `HealthMonitor` yang memantau suhu (throttle pada 80°C) dan `Watchdog` yang me-restart komponen jika hang.
-- **Kualitas:** Sangat Baik. Ini mencegah kerusakan hardware akibat panas berlebih (thermal damage) saat menjalankan model AI yang berat.
+- **Location:** `/root/config.json`
+- **Findings:** API keys and credentials were saved in plain text within the configuration JSON file.
+- **Risks:** Anyone with physical access to the device or local shell access can read the plain text API keys.
+
+---
+
+## 3. Hardware & Physical Security
+
+### GPIO Access
+
+- **Location:** `device/core/orchestrator.py`
+- **Findings:** The device listens to hardware inputs from physical buttons via GPIO (`button_pin_mode`).
+- **Analysis:** By design, this is a feature. However, if the GPIO pins are physically exposed, these "buttons" could be triggered electrically to toggle the device into unwanted operating states.
+
+### Thermal Management & Stability
+
+- **Location:** `device/utils/health.py` and `device/core/watchdog.py`
+- **Findings:** A dedicated `HealthMonitor` checks CPU temperature (throttles at 80°C) and a `Watchdog` automatically restarts frozen threads or services.
+- **Quality:** Excellent. This prevents thermal degradation or permanent hardware damage during continuous executions of heavy deep-learning models on the SoC.
 
 ### I2C Probing
 
-- **Lokasi:** `device/utils/health.py`
-- **Temuan:** Probing baterai dilakukan dengan menulis langsung ke bus I2C (`/dev/i2c-1` & `/dev/i2c-2`).
-- **Risiko:** Jika terdapat device I2C lain yang sensitif pada alamat yang sama (0x36, 0x40), penulisan random saat probing dapat menyebabkan device tersebut masuk ke state yang tidak terdefinisi (glitch).
+- **Location:** `device/utils/health.py`
+- **Findings:** Battery fuel gauge querying is performed by writing directly to the system I2C buses (`/dev/i2c-1` & `/dev/i2c-2`).
+- **Risks:** If other sensitive I2C devices share the same target addresses (e.g., 0x36, 0x40), generic probing writes can cause these devices to enter undefined or glitched states.
 
 ---
 
-## 4. Ringkasan Risiko
+## 4. Risk Summary
 
-| Kategori              | Level Risiko | Dampak                                      |
-|:--------------------- |:------------ |:------------------------------------------- |
-| **Autentikasi API**   | Kritis       | Kontrol penuh perangkat oleh pihak luar.    |
-| **Pencurian API Key** | Tinggi       | Kerugian finansial pada akun Cloud AI.      |
-| **Command Injection** | Sedang       | Potensi pengambilalihan shell OS.           |
-| **Thermal Safety**    | Rendah       | Sudah tertangani dengan baik oleh software. |
-
----
-
-## 5. Rekomendasi Perbaikan
-
-1. **Implementasi API Key/Token:** Tambahkan layer autentikasi sederhana (misal: `X-API-KEY` header) untuk semua request POST ke perangkat.
-2. **Bind ke Localhost (Jika Memungkinkan):** Jika dashboard hanya diakses via proxy atau tunnel, jangan bind web server ke `0.0.0.0`.
-3. **Sanitasi Input Subprocess:** Pastikan semua argumen yang dikirim ke `subprocess` atau `os.system` dibersihkan dari karakter shell (`;`, `&`, `|`, `$`).
-4. **Enkripsi Config:** Enkripsi API Key sebelum disimpan ke `config.json` menggunakan kunci unik perangkat (misal: ID dari CPU).
-5. **Restriksi CORS:** Jangan gunakan wildcard `*`. Batasi hanya ke domain companion app yang dipercaya.
+| Category | Risk Level | Impact |
+|:---|:---|:---|
+| **API Authentication** | Critical | Full device control by unauthorized network peers. |
+| **API Key Theft** | High | Financial theft/resource exhaustion on Cloud AI accounts. |
+| **Command Injection** | Medium | Potential execution of arbitrary OS shell commands. |
+| **Thermal Safety** | Low | Effectively managed by active monitoring software. |
 
 ---
 
-*Laporan ini dihasilkan secara otomatis untuk audit keamanan AuralAI-SDK.*
+## 5. Recommendations
+
+1. **Implement API Token/Key Authentication:** Add a lightweight authentication layer (e.g., matching a custom `device_token` or checking `X-API-KEY` headers) for all mutating API requests.
+2. **Bind Web Server to Localhost (If Proxying):** If the dashboard is accessed through a secure tunnel or proxy, do not bind the server to `0.0.0.0` (all interfaces); bind only to `127.0.0.1`.
+3. **Subprocess Argument Sanitization:** Ensure all dynamic inputs passed to shell-executing commands are strictly sanitized against shell command injection sequences.
+4. **Encrypt Local Config Credentials:** Encrypt API keys and credentials before writing them to `config.json` using a device-specific hardware key (e.g., CPU unique ID).
+5. **CORS Restrictions:** Enforce strict CORS policies rather than a wildcard `*`. Restrict origins to trusted companion application host addresses.
+
+---
+
+*This report was automatically generated for the AuralAI-SDK system security audit.*
