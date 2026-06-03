@@ -557,3 +557,12 @@ class Orchestrator:
         self._mode_event.set()   # unblock any waiting loop
         if self.audio_manager:
             self.audio_manager.stop()
+        # Release the camera explicitly. Without this, a SIGTERM/kill leaves the
+        # cvitek VI channel allocated ("No buffer space available"), and the next
+        # start SIGSEGVs in the C camera layer before Python can catch it.
+        time.sleep(0.2)          # let the AI loop exit its current frame read
+        if self.ai_engine:
+            try:
+                self.ai_engine.release()
+            except Exception:
+                pass

@@ -112,6 +112,14 @@ def main():
     logger.info("All threads running. Press Ctrl+C to stop.", module="Main")
 
     # ── Main thread: keep alive, handle shutdown ───────────────────────────────
+    # Treat SIGTERM (from `kill` / tools/run.py --stop) like Ctrl+C so the camera
+    # is released cleanly instead of leaking the VI channel (→ segfault on next start).
+    import signal
+
+    def _graceful_shutdown(signum, frame):
+        raise KeyboardInterrupt()
+
+    signal.signal(signal.SIGTERM, _graceful_shutdown)
     try:
         while True:
             time.sleep(1)

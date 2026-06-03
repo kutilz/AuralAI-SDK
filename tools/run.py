@@ -391,21 +391,21 @@ def show_status(client, mode_cfg):
 
 # ─── Autostart helpers ────────────────────────────────────────────────────────
 
-AUTOSTART_FILE = "/maixapp/auto_start.txt"
-APP_INFO_FILE  = "/maixapp/apps/app.info"
-AURALAI_APP_ID = "auralai_collect"
-
-# Entry yang didaftarkan ke app.info — exec menjalankan main.py
-AURALAI_APP_ENTRY = """
-[auralai_collect]
-name = AuralAI Collect
-name[zh] = AuralAI数据采集
-exec = python3 /root/aural-ai/main.py
-author = AuralAI
-desc = AuralAI assistive AI — web data collection server on port 8080
-desc[zh] = AI视觉辅助 — 数据采集服务器
-icon = /root/aural-ai/icon.png
-"""
+# The MaixApp launcher (/maixapp/auto_start.txt) is a GUI app that needs the
+# LCD; on a screen-less AuralAI unit it dies at boot, so that mechanism never
+# fires. Autostart from /etc/rc.local instead — /etc/init.d/S99local runs it at
+# the end of boot (after network + avahi). Reliable for a headless camera app.
+RC_LOCAL = "/etc/rc.local"
+RC_BEGIN = "# >>> AuralAI autostart >>>"
+RC_END   = "# <<< AuralAI autostart <<<"
+RC_BLOCK = (
+    RC_BEGIN + "\n"
+    "sleep 5\n"
+    "cd /root/aural-ai\n"
+    "nohup python3 /root/aural-ai/main.py >> /tmp/aural_main.log 2>&1 &\n"
+    "echo $! > /tmp/aural_main.pid\n"
+    + RC_END + "\n"
+)
 
 
 def _ssh(client, cmd):
@@ -414,100 +414,100 @@ def _ssh(client, cmd):
     return out.read().decode().strip()
 
 
-def autostart_status(client):
-    """Tampilkan app autostart saat ini di device."""
-    sep()
-    print(f"  {bold('🔍')} Autostart Status — MaixCAM")
-    sep()
-
-    # Baca auto_start.txt
-    current = _ssh(client, f"cat {AUTOSTART_FILE} 2>/dev/null || echo ''")
-    if current:
-        print(f"  {cyan('Autostart aktif')} : {bold(current)}")
-    else:
-        print(f"  {yellow('Tidak ada autostart')} (boot ke launcher biasa)")
-
-    # Apakah AuralAI sudah terdaftar di app.info?
-    registered = _ssh(
+def _write_rc_local(client, content):
+    """Tulis /etc/rc.local via base64 (hindari masalah quoting / CRLF)."""
+    import base64
+    b64 = base64.b64encode(content.encode("utf-8")).decode()
+    _ssh(
         client,
-        f"grep -q '\\[{AURALAI_APP_ID}\\]' {APP_INFO_FILE} 2>/dev/null && echo yes || echo no"
+        "python3 -c \"import base64,sys;"
+        f"open('{RC_LOCAL}','wb').write(base64.b64decode(sys.argv[1]))\" '{b64}' "
+        f"&& chmod +x {RC_LOCAL} && sync",
     )
-    if registered == "yes":
-        ok(f"AuralAI ({AURALAI_APP_ID}) terdaftar di app.info")
-    else:
-        warn(f"AuralAI belum terdaftar di app.info — jalankan --autostart untuk register")
 
+
+def _strip_block(text):
+    """Buang blok autostart AuralAI lama dari isi rc.local."""
+    import re
+    return re.sub(
+        re.escape(RC_BEGIN) + r".*?" + re.escape(RC_END) + r"\n?",
+        "", text, flags=re.S,
+    )
+
+
+def autostart_status(client):
+    """Tampilkan status autostart (rc.local)."""
+    sep()
+    print(f"  {bold('🔍')} Autostart Status — MaixCAM (rc.local)")
+    sep()
+
+    rc = _ssh(client, f"cat {RC_LOCAL} 2>/dev/null")
+    if RC_BEGIN in rc:
+        ok(f"AuralAI autostart AKTIF di {RC_LOCAL}")
+    else:
+        print(f"  {yellow('Belum di-set autostart')} — jalankan --autostart")
+
+    disabled = _ssh(client, "test -e /boot/rclocal.disable && echo yes || echo no")
+    if disabled == "yes":
+        warn("/boot/rclocal.disable ADA — rc.local TIDAK jalan saat boot!")
     print()
 
 
 def autostart_set(client, do_deploy=True):
     """
-    1. Deploy kode terbaru (opsional)
-    2. Daftarkan AuralAI ke /maixapp/apps/app.info jika belum ada
-    3. Tulis /maixapp/auto_start.txt = auralai_collect
+    Deploy kode (opsional) lalu pasang blok autostart AuralAI ke /etc/rc.local.
+    Idempotent: blok lama di-refresh, bukan ditumpuk. Dipakai untuk device
+    headless (layar dicopot) di mana launcher MaixApp tidak bisa jalan.
     """
     sep()
-    print(f"  {bold('⚡')} Set Autostart → {cyan(AURALAI_APP_ID)}")
+    print(f"  {bold('⚡')} Set Autostart → {cyan(RC_LOCAL)}")
     sep()
 
     if do_deploy:
         deploy(client)
 
-    # ── Pastikan app.info ada ──────────────────────────────────────────────────
-    exists = _ssh(client, f"test -f {APP_INFO_FILE} && echo yes || echo no")
-    if exists != "yes":
-        err(f"{APP_INFO_FILE} tidak ditemukan — apakah MaixCAM sudah terformat dengan benar?")
-        return
+    rc = _ssh(client, f"cat {RC_LOCAL} 2>/dev/null")
+    rc = _strip_block(rc)
+    if not rc.strip():
+        rc = "#!/bin/sh\n"
+    if not rc.startswith("#!"):
+        rc = "#!/bin/sh\n" + rc
+    if not rc.endswith("\n"):
+        rc += "\n"
+    rc = rc + RC_BLOCK
 
-    # ── Daftarkan AuralAI jika belum ada di app.info ──────────────────────────
-    already = _ssh(
-        client,
-        f"grep -q '\\[{AURALAI_APP_ID}\\]' {APP_INFO_FILE} && echo yes || echo no"
-    )
-    if already == "yes":
-        ok(f"[{AURALAI_APP_ID}] sudah ada di app.info — skip registrasi")
-    else:
-        # Append entry ke app.info
-        entry_escaped = AURALAI_APP_ENTRY.replace("'", "'\\''")
-        _ssh(client, f"printf '{entry_escaped}' >> {APP_INFO_FILE} && sync")
-        ok(f"[{AURALAI_APP_ID}] berhasil didaftarkan ke app.info")
+    _write_rc_local(client, rc)
+    _ssh(client, "rm -f /boot/rclocal.disable 2>/dev/null; sync")
 
-    # ── Tulis auto_start.txt ───────────────────────────────────────────────────
-    _ssh(client, f"echo -n '{AURALAI_APP_ID}' > {AUTOSTART_FILE} && sync")
-
-    # Verifikasi
-    written = _ssh(client, f"cat {AUTOSTART_FILE}")
-    if written == AURALAI_APP_ID:
-        ok(f"Autostart diset ke: {bold(AURALAI_APP_ID)}")
+    check = _ssh(client, f"cat {RC_LOCAL} 2>/dev/null")
+    if RC_BEGIN in check:
+        ok(f"Autostart diset di {RC_LOCAL}")
         print()
-        print(f"  {green('✓')} Device akan otomatis hosting web server saat boot.")
+        print(f"  {green('✓')} Device akan otomatis jalan saat boot (headless).")
         print(f"  {yellow('🌐')} Dashboard → http://{'{host}'}:8080")
-        print(f"  {yellow('🌐')} Data Collect → http://{'{host}'}:8080/collect")
         print()
         print(dim("  Untuk membatalkan: python tools/run.py --autostart-off"))
     else:
-        err(f"Verifikasi gagal — isi auto_start.txt: '{written}'")
+        err("Verifikasi gagal — blok autostart tidak ditemukan di rc.local")
 
 
 def autostart_clear(client):
-    """Hapus /maixapp/auto_start.txt sehingga device boot ke launcher normal."""
+    """Hapus blok autostart AuralAI dari /etc/rc.local."""
     sep()
-    print(f"  {bold('🗑')} Hapus Autostart")
+    print(f"  {bold('🗑')} Hapus Autostart (rc.local)")
     sep()
 
-    exists = _ssh(client, f"test -f {AUTOSTART_FILE} && echo yes || echo no")
-    if exists != "yes":
-        warn("auto_start.txt sudah tidak ada — tidak ada yang perlu dihapus")
+    rc = _ssh(client, f"cat {RC_LOCAL} 2>/dev/null")
+    if RC_BEGIN not in rc:
+        warn("Tidak ada blok AuralAI di rc.local — tidak ada yang dihapus")
         return
 
-    old = _ssh(client, f"cat {AUTOSTART_FILE}")
-    _ssh(client, f"rm -f {AUTOSTART_FILE} && sync")
-
-    verify = _ssh(client, f"test -f {AUTOSTART_FILE} && echo still || echo gone")
-    if verify == "gone":
-        ok(f"Autostart '{old}' dihapus — device akan boot ke launcher normal")
+    _write_rc_local(client, _strip_block(rc))
+    check = _ssh(client, f"cat {RC_LOCAL} 2>/dev/null")
+    if RC_BEGIN not in check:
+        ok("Autostart AuralAI dihapus dari rc.local")
     else:
-        err("Gagal menghapus auto_start.txt")
+        err("Gagal menghapus blok autostart")
     print()
 
 

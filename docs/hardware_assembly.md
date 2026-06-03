@@ -148,6 +148,14 @@ Karena layar dilepas, alamat web ditemukan lewat **2 cara**:
 ## 8. Langkah berikutnya
 
 - **Autostart saat boot:** `python tools/run.py --host <ip> --autostart`
-  (perangkat otomatis hosting web server tiap nyala). Lihat README/operator_runbook.
+  (status: `--autostart-status`, batal: `--autostart-off`).
+  > ⚙️ **Penting (device tanpa layar):** karena LCD dicopot, **launcher MaixApp
+  > tidak bisa jalan**, jadi mekanisme `auto_start.txt` bawaan **tidak berfungsi**.
+  > Tool ini otomatis pakai **`/etc/rc.local`** (dijalankan `/etc/init.d/S99local`
+  > saat boot, setelah WiFi + avahi) — andal untuk app headless. Verifikasi: cabut-
+  > colok, lalu cek `http://aural-bfe2.local:8080` hidup sendiri.
 - **Setup pengguna baru:** buka `http://aural-bfe2.local:8080/setup`, isi WiFi +
   nama perangkat + API key AI, lalu "Selesai".
+- **Catatan RAM (128 MB):** RAM ketat. Autostart lewat rc.local sengaja TIDAK
+  menjalankan launcher GUI, jadi RAM-nya untuk app + kamera + YOLO. Hindari
+  menjalankan proses berat lain bersamaan.
