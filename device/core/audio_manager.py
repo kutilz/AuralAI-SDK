@@ -23,6 +23,30 @@ HIGH     = 1
 NORMAL   = 2
 LOW      = 3
 
+# ── Object-alert mapping ──────────────────────────────────────────────────────
+# Detections carry an English COCO label + an Indonesian grid position
+# (from position_from_bbox: "atas", "kiri-atas", "tengah", …). The pre-recorded
+# chimes are named obj_<englishlabel>_<englishposkey>.wav with Indonesian audio
+# ("orang di atas"). These maps bridge the two so obstacle alerts play the
+# instant offline chime instead of falling back to (slow, online) gTTS.
+_LABEL_ID = {
+    "person": "orang", "motorcycle": "motor", "car": "mobil", "bicycle": "sepeda",
+    "bus": "bus", "truck": "truk", "dog": "anjing", "cat": "kucing",
+    "chair": "kursi", "bottle": "botol", "handbag": "tas", "backpack": "ransel",
+}
+_POS_KEY = {
+    "tengah": "center", "kiri": "left", "kanan": "right",
+    "atas": "top", "bawah": "bottom",
+    "kiri-atas": "top_left", "kanan-atas": "top_right",
+    "kiri-bawah": "bottom_left", "kanan-bawah": "bottom_right",
+}
+_POS_PHRASE = {
+    "left": "di sebelah kiri", "right": "di sebelah kanan", "center": "di depan",
+    "top": "di atas", "bottom": "di bawah",
+    "top_left": "di kiri atas", "top_right": "di kanan atas",
+    "bottom_left": "di kiri bawah", "bottom_right": "di kanan bawah",
+}
+
 _PCM_RATE    = 48000
 _PCM_BYTES_S = _PCM_RATE * 2   # s16le mono = 2 bytes/sample
 
@@ -96,10 +120,14 @@ class AudioManager:
     # ─── Public API ───────────────────────────────────────────────────────────
 
     def queue(self, text: str, priority: int = NORMAL, label: str = "",
-              cooldown: Optional[float] = None):
+              cooldown: Optional[float] = None, wav_name: Optional[str] = None):
         """
         Add text to the playback queue.
         If priority is higher than current playback, interrupt immediately.
+
+        wav_name: explicit pre-recorded WAV filename (in audio_dir) to play
+        instead of deriving one from `text`. `text` is still used for the
+        caption and as the TTS fallback if that file is missing.
         """
         cd = cooldown if cooldown is not None else self._cooldown_s
 
@@ -108,7 +136,13 @@ class AudioManager:
                 if time.monotonic() - self._cooldown_map[label] < cd:
                     return
 
-        wav  = self._find_wav(text)
+        wav = None
+        if wav_name:
+            cand = os.path.join(self._audio_dir, wav_name)
+            if os.path.exists(cand):
+                wav = cand
+        if wav is None:
+            wav = self._find_wav(text)
         task = _Task(text, wav, priority, label)
         self._pq.put((priority, task.seq, task))
 
@@ -116,12 +150,23 @@ class AudioManager:
             self._interrupt.set()
 
     def queue_object(self, label: str, position: str, is_danger: bool = False):
-        """Helper for detected objects. Danger → CRITICAL, otherwise HIGH."""
+        """
+        Helper for detected objects. Danger → CRITICAL, otherwise HIGH.
+
+        Plays the pre-recorded chime obj_<label>_<poskey>.wav ("orang di atas")
+        instantly/offline; if missing, falls back to speaking the same
+        Indonesian phrase via gTTS.
+        """
         priority = CRITICAL if is_danger else HIGH
+        poskey   = _POS_KEY.get(position, position)
+        obj_id   = _LABEL_ID.get(label, label)
+        phrase   = _POS_PHRASE.get(poskey, position)
+        spoken   = f"{obj_id} {phrase}".strip()
         self.queue(
-            text=f"{label} {position}",
+            text=spoken,
             priority=priority,
-            label=f"obj_{label}_{position}",
+            label=f"obj_{label}_{poskey}",
+            wav_name=f"obj_{label}_{poskey}.wav",
         )
 
     def queue_system(self, event: str):
