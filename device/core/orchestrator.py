@@ -64,13 +64,15 @@ class Orchestrator:
         self.ai_engine:    object = None
         self.audio_manager: object = None
         self.watchdog:      object = None   # set by main.py
+        self.onboarding:    object = None   # set by main.py (spoken-URL onboarding)
+        self.mdns:          object = None   # set by main.py (mDNS publisher)
 
         # ── Mode-change event (wakes AI loop when mode switches) ──────────────
         self._mode_event = threading.Event()
 
         # ── Hardware button ────────────────────────────────────────────────────
-        pin = cfg.BUTTON_PIN_MODE
-        if pin >= 0:
+        pin = self._button_pin()
+        if pin:
             self._start_button_listener(pin)
 
     # ─── Thread-safe properties ───────────────────────────────────────────────
@@ -167,9 +169,23 @@ class Orchestrator:
         wifi    = self._wifi_info()
         temp_c  = self._cpu_temp_c()
 
+        # ── Device identity (multi-device safe) ───────────────────────────────
+        dev_id = dev_name = dev_host = ""
+        try:
+            from utils import identity as _idy
+            dev_id   = _idy.device_id()
+            dev_name = _idy.device_name()
+            dev_host = _idy.mdns_hostname()
+        except Exception:
+            pass
+
         with self._lock:
             return {
                 "mode":         self._mode,
+                "device_id":    dev_id,
+                "device_name":  dev_name,
+                "mdns_host":    dev_host,
+                "url_ack":      cfg.get("url_ack", False),
                 "ai_focus":     self._ai_focus,
                 "detections":   list(self._detections),
                 "latency":      dict(self._latency),
@@ -362,30 +378,82 @@ class Orchestrator:
 
     # ─── Hardware button listener ─────────────────────────────────────────────
 
-    def _start_button_listener(self, pin: int):
+    @staticmethod
+    def _button_pin():
+        """Button pad name (e.g. 'A26'), or None when disabled."""
+        raw = cfg.get("button_pin_mode", -1)
+        if raw in (-1, "-1", "", None):
+            return None
+        if isinstance(raw, int):
+            return f"A{raw}"          # legacy numeric config → CVITEK pad name
+        return str(raw).strip() or None
+
+    def _start_button_listener(self, pin: str):
+        """
+        Monitor the button on GPIO `pin` (e.g. 'A26'), wired active-low to GND.
+
+          During onboarding (setup not done & URL not acknowledged):
+              short press → repeat the spoken URL ("minta ulang")
+              long press  → acknowledge, stop announcing ("udah paham")
+          After onboarding:
+              short press → cycle AI mode (explorer→context→qris)
+              long press  → reserved (no-op)
+
+        Long-press threshold is cfg.button_longpress_s (default 1.0s).
+        """
         def _loop():
             try:
-                from maix import gpio
-                btn        = gpio.GPIO(gpio.PIN(f"GPIO{pin}"), gpio.Mode.IN)
-                last_state = btn.value()
+                from maix import gpio, pinmap
+                func = f"GPIO{pin}"
+                try:
+                    pinmap.set_pin_function(pin, func)
+                except Exception:
+                    pass
+                btn  = gpio.GPIO(func, gpio.Mode.IN, gpio.Pull.PULL_UP)
+                last = btn.value()
+                press_start = 0.0
                 self.logger.info(
-                    f"Button listener active on GPIO{pin}", module="Orchestrator"
+                    f"Button listener active on {pin} (active-low)",
+                    module="Orchestrator",
                 )
                 while self._running:
-                    state = btn.value()
-                    if state == 0 and last_state == 1:   # falling edge = press
-                        next_mode = self._MODE_CYCLE[self.mode]
-                        self.switch_mode(next_mode)
-                        time.sleep(0.3)                  # debounce
-                    last_state = state
+                    v = btn.value()
+                    if last == 1 and v == 0:        # falling edge = pressed
+                        press_start = time.monotonic()
+                    elif last == 0 and v == 1:      # rising edge = released
+                        dur = time.monotonic() - press_start
+                        long_press = dur >= cfg.get("button_longpress_s", 1.0)
+                        self._on_button(long_press)
+                        time.sleep(0.05)            # debounce settle
+                    last = v
                     time.sleep(0.02)
             except Exception as e:
                 self.logger.warn(
-                    f"GPIO button unavailable (pin {pin}): {e}",
+                    f"GPIO button unavailable ({pin}): {e}",
                     module="Orchestrator",
                 )
 
         threading.Thread(target=_loop, daemon=True, name="BtnListener").start()
+
+    def _on_button(self, long_press: bool):
+        """Route a completed button press based on onboarding state."""
+        onboarding_active = (
+            not cfg.get("setup_completed", False)
+            and not cfg.get("url_ack", False)
+        )
+        if onboarding_active and self.onboarding is not None:
+            if long_press:
+                self.onboarding.acknowledge()         # "udah paham"
+            else:
+                self.onboarding.announce(force=True)  # "minta ulang"
+            return
+        # Normal operation: short press cycles mode; long press re-speaks the
+        # web address (the only way a blind user can re-discover the URL later).
+        if long_press:
+            if self.onboarding is not None:
+                self.onboarding.announce(force=True)
+        else:
+            self.switch_mode(self._MODE_CYCLE[self.mode])
 
     # ─── Thermal throttling callbacks ─────────────────────────────────────────
 

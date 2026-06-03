@@ -22,6 +22,7 @@ type Provider = "openai" | "gemini" | "claude";
 
 interface State {
   step: 1 | 2 | 3 | 4;
+  device_name: string;
   wifi_ssid: string;
   wifi_pw: string;
   provider: Provider;
@@ -43,6 +44,7 @@ const STEPS: { n: 1 | 2 | 3 | 4; label: string }[] = [
 function SetupApp() {
   const [s, setS] = useState<State>({
     step: 1,
+    device_name: "",
     wifi_ssid: "",
     wifi_pw: "",
     provider: "openai",
@@ -70,9 +72,12 @@ function SetupApp() {
     fetch("/status")
       .then((r) => r.json())
       .then((j) => {
-        if (j.wifi_ssid && !s.wifi_ssid) {
-          setS((cur) => ({ ...cur, wifi_ssid: j.wifi_ssid }));
-        }
+        setS((cur) => ({
+          ...cur,
+          wifi_ssid: j.wifi_ssid && !cur.wifi_ssid ? j.wifi_ssid : cur.wifi_ssid,
+          device_name:
+            j.device_name && !cur.device_name ? j.device_name : cur.device_name,
+        }));
       })
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -117,6 +122,7 @@ function SetupApp() {
     try {
       const payload: Record<string, unknown> = { setup_completed: true };
       if (audioModeFromQuery) payload.audio_mode = audioModeFromQuery;
+      if (s.device_name.trim()) payload.device_name = s.device_name.trim();
       await apiPost("/config", payload);
       window.location.href = "/";
     } catch (e: unknown) {
@@ -384,6 +390,40 @@ function Step2({ s, setS }: { s: State; setS: (u: (c: State) => State) => void }
         pengguna. Sinyal sebaiknya 3 dari 4 bar atau lebih supaya mode
         Deskripsi dan QRIS tetap cepat.
       </p>
+
+      <div style={{ marginTop: "var(--s-4)" }}>
+        <label htmlFor="device-name" style={fieldLabel}>
+          Nama perangkat (opsional)
+        </label>
+        <input
+          id="device-name"
+          type="text"
+          autoComplete="off"
+          value={s.device_name}
+          onInput={(e) =>
+            setS((c) => ({
+              ...c,
+              device_name: (e.currentTarget as HTMLInputElement).value,
+            }))
+          }
+          placeholder="Misal: dapur, kamar-budi"
+          style={fieldInput}
+        />
+        <small style={{ color: "var(--ink-3)", fontSize: "var(--t-sm)" }}>
+          Jadi alamat web perangkat:{" "}
+          <strong>
+            {(s.device_name.trim() || "aural-xxxx")
+              .toLowerCase()
+              .replace(/[^a-z0-9-]+/g, "-")
+              .replace(/-{2,}/g, "-")
+              .replace(/^-|-$/g, "")
+              .slice(0, 30) || "aural-xxxx"}
+            .local:8080
+          </strong>
+          . Beri nama berbeda untuk tiap unit supaya 5 perangkat tidak bentrok.
+          Kosongkan untuk pakai nama otomatis dari nomor perangkat.
+        </small>
+      </div>
 
       <div style={{ marginTop: "var(--s-4)" }}>
         <label htmlFor="wifi-ssid" style={fieldLabel}>

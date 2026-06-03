@@ -799,7 +799,27 @@ class AuralAIHandler(BaseHTTPRequestHandler):
                 return
             if "setup_completed" in data:
                 data["setup_completed"] = bool(data["setup_completed"])
+            # device_name becomes the mDNS `.local` label — keep it DNS-safe.
+            if "device_name" in data:
+                from utils.identity import sanitize_name
+                clean = sanitize_name(data["device_name"])
+                if not clean:
+                    self._send_json({
+                        "error": "invalid device_name",
+                        "hint": "gunakan huruf, angka, atau tanda strip",
+                    }, 400)
+                    return
+                data["device_name"] = clean
             cfg.update(data)
+            # Re-publish mDNS under the new name if it changed.
+            if "device_name" in data:
+                try:
+                    mdns = getattr(self.orch, "mdns", None)
+                    if mdns is not None:
+                        from utils.identity import device_name as _dn
+                        mdns.update_name(_dn())
+                except Exception:
+                    pass
             self.logger.info(f"Config updated: {list(data.keys())}")
             self._send_json({"ok": True, "applied": list(data.keys())})
         except Exception as e:

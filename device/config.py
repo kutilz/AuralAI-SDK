@@ -54,8 +54,10 @@ _DEFAULTS: dict = {
     "thermal_throttle_temp_c":  80.0,
     "thermal_throttle_fps":     10,
     "watchdog_timeout_s":       5.0,
-    # GPIO pin number for hardware mode-cycle button; -1 = disabled
-    "button_pin_mode":          -1,
+    # Hardware button pad name (e.g. "A26"); -1 or "" = disabled.
+    # A26 idles HIGH on this board, so wire button → A26 ↔ GND (active-low),
+    # no external resistor needed. Doubles as onboarding "repeat/ack" + mode-cycle.
+    "button_pin_mode":          "A26",
     # Speaker volume (0-100); read by AudioManager on every play
     "audio_volume":             80,
     # Auth: device token (auto-generated on first boot if empty)
@@ -95,6 +97,18 @@ _DEFAULTS: dict = {
     # Asset directory for `/assets/*` static serving + manifest.json.
     # Photos that override the SVG mockups in /guide land here.
     "assets_dir":               "/root/assets",
+    # ── Device identity & spoken-URL onboarding (multi-device) ────────────────
+    # Friendly device name; "" → auto "aural-<mac-suffix>" (see utils/identity).
+    # Becomes the mDNS `.local` label, so it must stay DNS-safe (UI sanitizes it).
+    "device_name":              "",
+    # Publish <device_name>.local via mDNS so the dashboard URL survives DHCP.
+    "mdns_enabled":             True,
+    # Speak the dashboard URL over the speaker during first-time setup.
+    "url_announce_enabled":     True,
+    # Set True (button long-press) once the helper has heard/understood the URL.
+    "url_ack":                  False,
+    # Hardware button long-press threshold (s) — long = acknowledge / reserved.
+    "button_longpress_s":       1.0,
 }
 
 
@@ -362,6 +376,26 @@ class Config:
     @property
     def ASSETS_DIR(self) -> str:
         return self.get("assets_dir", "/root/assets")
+
+    @property
+    def DEVICE_NAME(self) -> str:
+        return self.get("device_name", "") or ""
+
+    @property
+    def MDNS_ENABLED(self) -> bool:
+        return bool(self.get("mdns_enabled", True))
+
+    @property
+    def URL_ANNOUNCE_ENABLED(self) -> bool:
+        return bool(self.get("url_announce_enabled", True))
+
+    @property
+    def URL_ACK(self) -> bool:
+        return bool(self.get("url_ack", False))
+
+    @property
+    def BUTTON_LONGPRESS_S(self) -> float:
+        return float(self.get("button_longpress_s", 1.0))
 
 
 # ─── Singleton ────────────────────────────────────────────────────────────────
