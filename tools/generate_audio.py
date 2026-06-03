@@ -54,6 +54,11 @@ POSITIONS = {
 }
 
 SYSTEM_EVENTS = {
+    # Onboarding / status cues for the screen-less device. Keys match the
+    # AudioManager._find_wav safe-name of the spoken text, so these play
+    # offline (no gTTS call) at boot and on button-acknowledge.
+    "auralai_siap_digunakan":       "AuralAI siap digunakan.",
+    "baik_sudah_paham":             "Baik, sudah paham.",
     "mode_explorer_aktif":          "mode penjelajah aktif",
     "mode_context_aktif":           "mode konteks aktif",
     "mode_qris_aktif":              "mode scan bayar aktif",
