@@ -37,6 +37,12 @@ class AIEngine:
         self._last_frame:   object = None
         self._lock = threading.Lock()
 
+        # Gentle camera recovery: when the camera is down, retry at most once
+        # per interval instead of letting the watchdog hammer reload() every
+        # few seconds (which leaks VI buffers until the C layer segfaults).
+        self._last_cam_retry      = 0.0
+        self._cam_retry_interval_s = 30.0
+
         self._init_camera()
         self._init_model()
 
@@ -111,6 +117,21 @@ class AIEngine:
         self._init_camera()
         self._init_model()
 
+    def _maybe_recover_camera(self):
+        """Rate-limited camera re-init while the camera is down (no hammering)."""
+        if not MAIX_AVAILABLE:
+            return
+        now = time.monotonic()
+        if now - self._last_cam_retry < self._cam_retry_interval_s:
+            return
+        self._last_cam_retry = now
+        self.logger.warn(
+            "Camera unavailable — retrying init (30s backoff)", module="AIEngine"
+        )
+        self._init_camera()
+        if self._cam is not None and not self._model_loaded:
+            self._init_model()
+
     # ─── Main pipeline ────────────────────────────────────────────────────────
 
     def capture_and_infer(self):
@@ -120,6 +141,7 @@ class AIEngine:
         Returns (None, [], {}) on camera failure.
         """
         if not MAIX_AVAILABLE or self._cam is None:
+            self._maybe_recover_camera()
             return None, [], {}
 
         t0 = time.time()

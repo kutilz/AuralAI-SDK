@@ -800,10 +800,13 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             if "setup_completed" in data:
                 data["setup_completed"] = bool(data["setup_completed"])
             # device_name becomes the mDNS `.local` label — keep it DNS-safe.
+            # Empty ("") is allowed: it reverts to the auto "aural-<id>" default.
+            # Reject only a non-empty name that sanitizes to nothing (e.g. "@@@").
             if "device_name" in data:
                 from utils.identity import sanitize_name
-                clean = sanitize_name(data["device_name"])
-                if not clean:
+                raw = (data["device_name"] or "").strip()
+                clean = sanitize_name(raw)
+                if raw and not clean:
                     self._send_json({
                         "error": "invalid device_name",
                         "hint": "gunakan huruf, angka, atau tanda strip",

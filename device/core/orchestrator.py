@@ -494,6 +494,14 @@ class Orchestrator:
         self.logger.ok("AI Engine + Audio Manager ready", module="Orchestrator")
 
         while self._running:
+            # Heartbeat from the loop itself: the engine thread is alive even
+            # when the camera is down, so the watchdog must NOT reload-hammer.
+            # (Repeated camera re-init on a leaked VI channel exhausts buffers
+            #  → "No buffer space available" → SIGSEGV. Recovery is handled
+            #  gently with backoff inside AIEngine.capture_and_infer instead.)
+            if self.watchdog:
+                self.watchdog.heartbeat("ai_engine")
+
             # Clear the mode-change event at the top of each cycle
             self._mode_event.clear()
 
