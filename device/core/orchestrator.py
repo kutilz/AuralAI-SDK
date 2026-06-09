@@ -510,6 +510,14 @@ class Orchestrator:
             if cmd:
                 self._handle_command(cmd)
 
+            # Cloud camera-QR pairing: while unpaired, watch frames for a pairing
+            # QR shown in the browser and let the device claim itself.
+            cloud = getattr(self, "cloud", None)
+            if cloud is not None and self.ai_engine is not None and cloud.wants_qr_scan():
+                payload = self.ai_engine.scan_pairing_qr()
+                if payload:
+                    cloud.on_qr_payload(payload)
+
             # While AI Focus is active, skip inference and wait
             if self.ai_focus:
                 self._mode_event.wait(timeout=0.05)

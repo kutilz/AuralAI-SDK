@@ -21,6 +21,7 @@ from config import cfg
 from core.orchestrator import Orchestrator
 from core.watchdog import Watchdog
 from core.onboarding import OnboardingAnnouncer
+from core.cloud import CloudClient
 from server.web_server import WebServer
 from utils.logger import Logger
 from utils.health import HealthMonitor
@@ -109,6 +110,14 @@ def main():
         name="Onboard",
     ).start()
 
+    # ── Cloud client (pairing + config relay; offline-safe) ────────────────────
+    cloud = None
+    if cfg.CLOUD_ENABLED:
+        cloud = CloudClient(orchestrator=orchestrator, logger=logger, announcer=announcer)
+        orchestrator.cloud = cloud
+        threading.Thread(target=cloud.run, daemon=True, name="Cloud").start()
+        logger.info(f"Cloud client → {cfg.CLOUD_BASE_URL}", module="Main")
+
     logger.info("All threads running. Press Ctrl+C to stop.", module="Main")
 
     # ── Main thread: keep alive, handle shutdown ───────────────────────────────
@@ -130,6 +139,8 @@ def main():
         health.stop()
         if mdns:
             mdns.stop()
+        if cloud:
+            cloud.stop()
         logger.info("AuralAI SDK stopped.", module="Main")
 
 

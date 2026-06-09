@@ -109,6 +109,24 @@ _DEFAULTS: dict = {
     "url_ack":                  False,
     # Hardware button long-press threshold (s) — long = acknowledge / reserved.
     "button_longpress_s":       1.0,
+    # ── Cloud pairing (auralai web hub) ───────────────────────────────────────
+    # When True, once online the device registers with the cloud relay, speaks a
+    # short pairing code, and pulls config pushed from the web. Offline-safe:
+    # if the cloud is unreachable it falls back to the local spoken-URL setup.
+    "cloud_enabled":            True,
+    # Base URL of the deployed web hub (Vercel). Override for local testing, e.g.
+    # "http://<your-pc-ip>:3000". Production: your auralai.app / *.vercel.app URL.
+    "cloud_base_url":           "https://aural-ai-six.vercel.app",
+    # Identity on the cloud relay — generated once on first online boot.
+    "cloud_device_id":          "",
+    "cloud_device_secret":      "",
+    # E2E keypair for receiving encrypted API keys (see utils/crypto_box).
+    "device_pubkey":            "",
+    "device_privkey_enc":       "",
+    # Set True once the device has been claimed by a user account via a code.
+    "paired":                   False,
+    # Long-poll timeout (s) the device waits per /api/poll request.
+    "cloud_poll_timeout_s":     35,
 }
 
 
@@ -396,6 +414,22 @@ class Config:
     @property
     def BUTTON_LONGPRESS_S(self) -> float:
         return float(self.get("button_longpress_s", 1.0))
+
+    @property
+    def CLOUD_ENABLED(self) -> bool:
+        return bool(self.get("cloud_enabled", True))
+
+    @property
+    def CLOUD_BASE_URL(self) -> str:
+        return (self.get("cloud_base_url", "") or "").rstrip("/")
+
+    @property
+    def PAIRED(self) -> bool:
+        return bool(self.get("paired", False))
+
+    @property
+    def CLOUD_POLL_TIMEOUT_S(self) -> int:
+        return int(self.get("cloud_poll_timeout_s", 35))
 
 
 # ─── Singleton ────────────────────────────────────────────────────────────────

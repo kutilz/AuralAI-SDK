@@ -19,3 +19,10 @@ gtts>=2.5
 # NOTE: already present on the stock MaixCAM image (zeroconf 0.39.4) — listed
 # here for completeness / reflash reproducibility.
 zeroconf>=0.39
+
+# OPTIONAL. Cloud pairing E2E (utils/crypto_box) is PURE PYTHON (no native deps)
+# so it runs even on riscv64 MaixCAM where `cryptography` has no wheel/Rust.
+# Installing `cryptography` is NOT required for E2E; it only upgrades secure_keys
+# at-rest encryption from the HMAC fallback to AES-GCM. Skip on boards (riscv64)
+# where it can't build.
+# cryptography>=41.0

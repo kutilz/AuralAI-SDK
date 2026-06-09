@@ -1,8 +1,13 @@
 # ─── Environment & Secrets ────────────────────────────────────────────────────
 .env
 *.env
+*.env.local
+.env.local
 /root/.env
 secrets.py
+
+# Mock device test state (throwaway device secret + private key — never commit)
+tools/.mock_device.json
 
 # ─── Model Files (besar, download manual dari MaixHub) ────────────────────────
 models/*.mud

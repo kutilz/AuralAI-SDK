@@ -23,6 +23,10 @@ class OnboardingAnnouncer:
     def __init__(self, orchestrator, logger):
         self.orch = orchestrator
         self.logger = logger
+        # Cloud pairing: when active, the spoken prompt is the pairing code (via
+        # the web hub) instead of the local LAN URL. Set by core/cloud.py.
+        self.cloud_active = False
+        self.pairing_code = None
 
     # ─── gating ───────────────────────────────────────────────────────────────
 
@@ -36,19 +40,45 @@ class OnboardingAnnouncer:
     # ─── announce / acknowledge ───────────────────────────────────────────────
 
     def announce(self, force: bool = False):
-        """Speak the onboarding phrase. force=True bypasses the gate (button repeat)."""
+        """Speak the onboarding phrase. force=True bypasses the gate (button repeat).
+
+        Speaks the cloud pairing code when cloud pairing is active and a code is
+        available; otherwise falls back to the local LAN URL phrase.
+        """
         if not force and not self._should_nag():
             return
         am = getattr(self.orch, "audio_manager", None)
         if am is None:
             return
         try:
-            from utils.identity import onboarding_phrase
-            text = onboarding_phrase(port=int(cfg.get("web_port", 8080)))
+            if self.cloud_active and self.pairing_code:
+                from utils.identity import pairing_phrase
+                text = pairing_phrase(self.pairing_code, cfg.get("cloud_base_url", ""))
+                label = "onboard_pair"
+            else:
+                from utils.identity import onboarding_phrase
+                text = onboarding_phrase(port=int(cfg.get("web_port", 8080)))
+                label = "onboard_url"
         except Exception as e:
             self.logger.warn(f"onboarding phrase failed: {e}", module="Onboard")
             return
-        am.queue(text, priority=NORMAL, label="onboard_url", cooldown=3.0)
+        am.queue(text, priority=NORMAL, label=label, cooldown=3.0)
+
+    def set_pairing_code(self, code: str, speak: bool = True):
+        """core/cloud.py calls this once it has a fresh code to announce."""
+        self.cloud_active = True
+        self.pairing_code = code
+        if speak:
+            self.announce(force=True)
+
+    def announce_paired(self):
+        """core/cloud.py calls this when the device gets claimed by an account."""
+        self.cloud_active = False
+        self.pairing_code = None
+        am = getattr(self.orch, "audio_manager", None)
+        if am is not None:
+            am.queue("Perangkat sudah terhubung.", priority=NORMAL,
+                     label="onboard_paired", cooldown=0)
 
     def acknowledge(self):
         """User long-pressed 'understood' — stop re-announcing the URL."""
@@ -85,6 +115,13 @@ class OnboardingAnnouncer:
             time.sleep(0.5)
             waited += 0.5
             am = getattr(self.orch, "audio_manager", None)
+
+        # When cloud pairing is enabled, core/cloud.py owns first-boot
+        # announcements (pairing code, or local-URL fallback if cloud is
+        # unreachable). Skip the local nag here to avoid double-speaking.
+        if bool(cfg.get("cloud_enabled", True)):
+            self.logger.info("Onboarding deferred to cloud client", module="Onboard")
+            return
 
         if self._should_nag():
             try:

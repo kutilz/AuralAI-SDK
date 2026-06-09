@@ -43,6 +43,9 @@ class AIEngine:
         self._last_cam_retry      = 0.0
         self._cam_retry_interval_s = 30.0
 
+        # Throttle for cloud pairing QR scans (only active while unpaired).
+        self._last_qr_scan = 0.0
+
         self._init_camera()
         self._init_model()
 
@@ -230,6 +233,41 @@ class AIEngine:
             self.orch.watchdog.heartbeat("ai_engine")
 
         return jpeg, detections, latency
+
+    # ─── Cloud pairing QR scan ─────────────────────────────────────────────────
+
+    def scan_pairing_qr(self):
+        """
+        Decode a QR from the latest camera frame using the native MaixPy decoder
+        (no extra deps, no AI/API key). Throttled. Returns the QR payload string
+        if found, else None. Used only while the device is unpaired so the camera
+        can be pointed at the pairing QR shown in the web browser.
+        """
+        now = time.monotonic()
+        if now - self._last_qr_scan < 0.6:
+            return None
+        self._last_qr_scan = now
+
+        frame = self._last_frame
+        if frame is None or not MAIX_AVAILABLE:
+            return None
+        try:
+            codes = frame.find_qrcodes()
+        except Exception:
+            return None
+        for qr in codes or []:
+            try:
+                payload = qr.payload()
+            except Exception:
+                try:
+                    payload = qr.payload   # some MaixPy builds expose it as a property
+                except Exception:
+                    payload = None
+            if isinstance(payload, (bytes, bytearray)):
+                payload = payload.decode("utf-8", errors="replace")
+            if payload:
+                return payload
+        return None
 
     # ─── Cloud triggers ───────────────────────────────────────────────────────
 

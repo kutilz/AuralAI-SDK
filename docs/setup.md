@@ -134,6 +134,28 @@ http://192.168.1.XXX:8080
 
 ---
 
+## 7b. Cloud Pairing (recommended for first-time setup)
+
+Instead of typing a `*.local` address, let the device pair through the **AuralAI
+web hub**. Once the device is on WiFi it speaks a short **pairing code**; open the
+hub, sign in, and enter the code to configure the AI provider/key and audio
+preferences remotely (pushed back to the device, API keys end-to-end encrypted).
+
+- Deploy / run the hub: see [`web/README.md`](../web/README.md) and the
+  *Cloud Pairing & Web Hub* section in the [main README](../README.md).
+- Point the device at your hub via `cloud_base_url` in
+  [`device/config.py`](../device/config.py) (defaults to `https://auralai.app`;
+  use your PC's LAN IP, e.g. `http://192.168.1.50:3000`, for local testing).
+- Test the whole relay **without hardware**:
+  ```bash
+  pip install cryptography
+  python tools/mock_device.py --base-url http://localhost:3000
+  ```
+- Cloud is **optional and offline-safe**: set `cloud_enabled=false` (or simply
+  leave the device offline) and the local spoken-URL `/setup` flow above still works.
+
+---
+
 ## 8. Companion PC — MVP Stack (MaixCAM + PC)
 
 This architecture splits **lightweight inference (YOLO on MaixCAM)** and **heavy logic (OpenAI Vision / Browser TTS)**. It runs a Flask server on your laptop (`companion/webserver.py`). This pattern aligns with MaixPy documentation using the standard `requests` module on the device.
