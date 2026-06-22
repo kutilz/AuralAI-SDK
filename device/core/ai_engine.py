@@ -21,8 +21,31 @@ except ImportError:
     MAIX_AVAILABLE = False
 
 from config import cfg, RELEVANT_LABELS, COCO_LABEL_MAP
+from utils import distance
 from utils.logger import position_from_bbox
+from utils.stage_timer import StageTimer
+from utils.scene_metrics import scene_metrics
 from adapters import get_adapter, AdapterError
+
+
+# Signatures of a *connectivity* failure (DNS / route / timeout / refused) as
+# opposed to a server-side or app error. urllib surfaces these inside the
+# AdapterError message, e.g. "<urlopen error [Errno -2] Name or service not
+# known>" or "<urlopen error timed out>". We use this to speak an honest
+# "tidak ada koneksi internet" cue instead of a generic failure. HTTP status
+# errors (e.g. "Gemini HTTP 429") intentionally do NOT match — there the network
+# is fine, the API just rejected the request.
+_NET_ERR_SIGNS = (
+    "urlopen error", "getaddrinfo", "name or service not known",
+    "temporary failure in name resolution", "timed out", "timeout",
+    "connection refused", "network is unreachable", "no route to host",
+    "connection reset", "connection aborted", "[errno -2]", "[errno -3]",
+)
+
+
+def _is_network_error(exc) -> bool:
+    s = str(exc).lower()
+    return any(sign in s for sign in _NET_ERR_SIGNS)
 
 
 class AIEngine:
@@ -45,6 +68,16 @@ class AIEngine:
 
         # Throttle for cloud pairing QR scans (only active while unpaired).
         self._last_qr_scan = 0.0
+
+        # Temporal de-flicker tracker. A label must persist in roughly the same
+        # spot for several consecutive frames before it counts as a real
+        # detection. Kills YOLO phantom boxes that flicker/teleport on a covered
+        # or blurred lens (the "keeps announcing a person with the camera
+        # covered" failure mode). label -> {"cx", "cy", "streak"}.
+        self._track: dict = {}
+        # Last distance tier per label, so distance.band() can apply hysteresis
+        # (stops an object on the near/far boundary flapping every frame).
+        self._prev_tiers: dict = {}
 
         self._init_camera()
         self._init_model()
@@ -144,6 +177,8 @@ class AIEngine:
         Returns (None, [], {}) on camera failure.
         """
         if not MAIX_AVAILABLE or self._cam is None:
+            self._track = {}            # drop stale tracks across a camera gap
+            self._prev_tiers = {}       # and their distance-tier hysteresis state
             self._maybe_recover_camera()
             return None, [], {}
 
@@ -201,19 +236,43 @@ class AIEngine:
 
                 x, y, w, h   = det.x, det.y, det.w, det.h
                 area_ratio   = (w * h) / frame_area
+                # is_danger keeps the original global-area rule untouched for
+                # back-compat (existing callers/tests depend on this exact
+                # field). The new per-class "tier" is the richer signal Lane A's
+                # AnnouncePolicy consumes; we intentionally don't redefine
+                # is_danger off it here to avoid changing existing behavior.
                 is_danger    = area_ratio > cfg.DANGER_AREA_THRESHOLD
                 pos          = position_from_bbox(
                     x, y, w, h, cfg.INPUT_WIDTH, cfg.INPUT_HEIGHT
                 )
+                # Coarse per-class distance tier with ground-contact hint +
+                # hysteresis (prev tier for this label stops boundary flapping).
+                bbox_bottom_norm = (y + h) / max(cfg.INPUT_HEIGHT, 1)
+                tier = distance.band(
+                    label, area_ratio, bbox_bottom_norm,
+                    prev_tier=self._prev_tiers.get(label), cfg=cfg,
+                )
+                self._prev_tiers[label] = tier
 
                 detections.append({
                     "label":      label,
                     "confidence": round(det.score, 3),
                     "position":   pos,
                     "is_danger":  is_danger,
+                    "tier":       tier,
                     "bbox":       {"x": x, "y": y, "w": w, "h": h},
                     "area_ratio": round(area_ratio, 4),
                 })
+
+            # Forget tier-hysteresis state for labels no longer in view, so a
+            # returning object starts fresh (mirrors the de-flicker track reset).
+            seen = {d["label"] for d in detections}
+            self._prev_tiers = {
+                lbl: t for lbl, t in self._prev_tiers.items() if lbl in seen
+            }
+
+            # Suppress flickering phantoms before anything acts on them.
+            detections = self._stabilize_detections(detections)
 
             t_post = (time.time() - t2) * 1000
         else:
@@ -233,6 +292,54 @@ class AIEngine:
             self.orch.watchdog.heartbeat("ai_engine")
 
         return jpeg, detections, latency
+
+    # ─── Temporal de-flicker ──────────────────────────────────────────────────
+
+    def _stabilize_detections(self, detections: list) -> list:
+        """
+        Suppress flickering false positives by requiring temporal + spatial
+        persistence. A label is only emitted once its best box has stayed in
+        roughly the same place for >= detection_min_streak consecutive frames.
+
+        Real objects move smoothly and persist across frames; YOLO phantoms on a
+        covered or blurred lens pop in and teleport around, so their streak never
+        builds and they're dropped. Set detection_min_streak <= 1 to disable.
+        """
+        min_streak = int(cfg.get("detection_min_streak", 3))
+        if min_streak <= 1:
+            return detections
+
+        max_move = float(cfg.get("detection_max_center_move", 0.25))
+        w = max(cfg.INPUT_WIDTH, 1)
+        h = max(cfg.INPUT_HEIGHT, 1)
+
+        # Keep the highest-confidence box per label for this frame.
+        best: dict = {}
+        for d in detections:
+            lbl = d["label"]
+            if lbl not in best or d["confidence"] > best[lbl]["confidence"]:
+                best[lbl] = d
+
+        new_track: dict = {}
+        stable: list = []
+        for lbl, d in best.items():
+            b  = d["bbox"]
+            cx = (b["x"] + b["w"] / 2) / w
+            cy = (b["y"] + b["h"] / 2) / h
+            prev = self._track.get(lbl)
+            if (prev is not None
+                    and abs(cx - prev["cx"]) <= max_move
+                    and abs(cy - prev["cy"]) <= max_move):
+                streak = prev["streak"] + 1
+            else:
+                streak = 1
+            new_track[lbl] = {"cx": cx, "cy": cy, "streak": streak}
+            if streak >= min_streak:
+                stable.append(d)
+
+        # Labels missing this frame fall out of new_track → their streak resets.
+        self._track = new_track
+        return stable
 
     # ─── Cloud pairing QR scan ─────────────────────────────────────────────────
 
@@ -286,15 +393,35 @@ class AIEngine:
 
     def _run_with_progress(self, fn, *args, interval_s: float = 3.0):
         """
-        Call fn(*args) in the current thread.
-        While waiting, queue 'masih_memproses' audio every interval_s seconds
-        so user knows the device is still working.
+        Call fn(*args) in the current thread (the AI loop thread).
+        While waiting, every interval_s seconds:
+          • queue 'masih_memproses' so the user knows we're still working, and
+          • heartbeat the watchdog.
+
+        The heartbeat is essential: fn here blocks the AI loop for the whole
+        cloud round-trip (Gemini ~7 s + gTTS warm), during which the loop can't
+        send its own heartbeat. Without this, a slow call (>~8 s) makes the
+        watchdog reload the engine, and the cvitek camera then fails to reopen
+        ("vi get frame timeout") — a hard failure, not just latency.
         """
         stop = threading.Event()
 
         def _progress():
+            # A normal cloud call is ~7 s, so only after it drags past
+            # ai_slow_warn_s do we switch the spoken cue from "masih memproses"
+            # to "koneksi internet lambat" — by then a slow/flaky network is the
+            # likely cause, and saying so is more honest (and reassuring) than a
+            # generic "still processing". Threshold stays above the normal call
+            # time to avoid false "slow network" alarms on every capture.
+            slow_after = float(cfg.get("ai_slow_warn_s", 9.0))
+            start = time.monotonic()
             while not stop.wait(timeout=interval_s):
-                self.orch.audio_manager.queue_system("masih_memproses")
+                wd = getattr(self.orch, "watchdog", None)
+                if wd:
+                    wd.heartbeat("ai_engine")
+                elapsed = time.monotonic() - start
+                cue = "koneksi_lambat" if elapsed >= slow_after else "masih_memproses"
+                self.orch.audio_manager.queue_system(cue)
 
         t = threading.Thread(target=_progress, daemon=True)
         t.start()
@@ -302,6 +429,11 @@ class AIEngine:
             return fn(*args)
         finally:
             stop.set()
+            # Beat once more on the way out so the loop's next iteration starts
+            # with a fresh timer even if the call ran right up to a check.
+            wd = getattr(self.orch, "watchdog", None)
+            if wd:
+                wd.heartbeat("ai_engine")
 
     def trigger_scene_description(self):
         """Capture last frame → AI Vision adapter → queue audio description."""
@@ -314,23 +446,50 @@ class AIEngine:
         self.logger.info(
             f"Sending frame to {cfg.AI_PROVIDER} (scene)", module="AIEngine"
         )
-        self.orch.audio_manager.queue_system("sedang_menganalisis")
+        am = self.orch.audio_manager
+        am.queue_cue("chime_capture.wav")
+        am.queue_system("sedang_menganalisis")
 
         try:
             adapter = self._get_adapter()
-            description = self._run_with_progress(
-                adapter.describe_scene, self._frame_jpeg(), cfg.PROMPT_SCENE
-            )
+
+            # Measure the dominant stage (Gemini round-trip) for the device log.
+            # Audio rendering is delegated to AudioManager.speak_scene, which
+            # plays from the per-word cache (zero network) when the whole
+            # sentence is already cached, else speaks it via gTTS and warms the
+            # missing words in the background.
+            timer = StageTimer()
+
+            def _work():
+                with timer.stage("gemini"):
+                    return adapter.describe_scene(self._frame_jpeg(), cfg.PROMPT_SCENE)
+
+            description = self._run_with_progress(_work)
+            self.logger.info(f"[scene-timing] {timer.oneline()}", module="AIEngine")
             self.logger.ok(f"Scene: {description}", module="AIEngine")
-            self.orch.audio_manager.queue_info(description)
+            am.queue_cue("chime_success.wav")
+            # Open a latency record for the /buttons dashboard; speak_scene fills
+            # in how the audio was rendered (per-word cache vs whole synth).
+            sid = scene_metrics.start_describe(
+                description,
+                cfg.get("scene_verbosity", "detail"),
+                timer.summary().get("gemini_ms", 0),
+            )
+            am.speak_scene(description, scene_id=sid)
         except AdapterError as e:
             self.logger.error(f"AI adapter error: {e}", module="AIEngine")
-            self.orch.audio_manager.queue_system("gagal_menganalisis")
+            am.queue_cue("chime_error.wav")
+            # Distinguish "no internet" from other failures so the user knows
+            # whether to check their connection or just retry.
+            am.queue_system("tidak_ada_koneksi" if _is_network_error(e)
+                            else "gagal_menganalisis")
         except Exception as e:
             self.logger.exception(
                 f"Unexpected adapter error: {e}", module="AIEngine", exc=e,
             )
-            self.orch.audio_manager.queue_system("gagal_menganalisis")
+            am.queue_cue("chime_error.wav")
+            am.queue_system("tidak_ada_koneksi" if _is_network_error(e)
+                            else "gagal_menganalisis")
 
     def trigger_qris_scan(self):
         """
@@ -357,6 +516,7 @@ class AIEngine:
         self.logger.info(
             f"QRIS scan triggered (mode={mode})", module="AIEngine",
         )
+        self.orch.audio_manager.queue_cue("chime_capture.wav")
         self.orch.audio_manager.queue_system("memindai_kode_pembayaran")
 
         jpeg = self._frame_jpeg()
@@ -378,6 +538,7 @@ class AIEngine:
                 f"QRIS offline decoder unavailable: {e}",
                 module="AIEngine", exc=e,
             )
+            self.orch.audio_manager.queue_cue("chime_error.wav")
             self.orch.audio_manager.queue_system("gagal_memindai")
             return
 
@@ -386,8 +547,10 @@ class AIEngine:
         text, safe = format_audio_message(verified, cap=cfg.QRIS_NOMINAL_WARN_CAP)
         self.logger.ok(f"QRIS(offline): {text}", module="AIEngine")
         if safe:
+            self.orch.audio_manager.queue_cue("chime_success.wav")
             self.orch.audio_manager.queue_info(text)
         else:
+            self.orch.audio_manager.queue_cue("chime_error.wav")
             self.orch.audio_manager.queue_system("gagal_memindai")
         self._save_qris_log(text)
 
@@ -396,15 +559,18 @@ class AIEngine:
             adapter = self._get_adapter()
             result = self._run_with_progress(adapter.scan_qris, jpeg, cfg.PROMPT_QRIS)
             self.logger.ok(f"QRIS(online): {result}", module="AIEngine")
+            self.orch.audio_manager.queue_cue("chime_success.wav")
             self.orch.audio_manager.queue_info(result)
             self._save_qris_log(result)
         except AdapterError as e:
             self.logger.error(f"AI adapter error: {e}", module="AIEngine")
+            self.orch.audio_manager.queue_cue("chime_error.wav")
             self.orch.audio_manager.queue_system("gagal_memindai")
         except Exception as e:
             self.logger.exception(
                 f"Unexpected adapter error: {e}", module="AIEngine", exc=e,
             )
+            self.orch.audio_manager.queue_cue("chime_error.wav")
             self.orch.audio_manager.queue_system("gagal_memindai")
 
     def _qris_hybrid(self, jpeg: bytes):
@@ -440,6 +606,7 @@ class AIEngine:
         text, safe = format_audio_message(verified, cap=cfg.QRIS_NOMINAL_WARN_CAP)
         self.logger.ok(f"QRIS(hybrid): {text}", module="AIEngine")
         if safe:
+            self.orch.audio_manager.queue_cue("chime_success.wav")
             self.orch.audio_manager.queue_info(text)
         else:
             # Local failed AND we have nothing trustworthy → graceful fallback
@@ -449,8 +616,10 @@ class AIEngine:
                     "QRIS hybrid: local failed, falling back to AI raw",
                     module="AIEngine",
                 )
+                self.orch.audio_manager.queue_cue("chime_success.wav")
                 self.orch.audio_manager.queue_info(ai_text)
             else:
+                self.orch.audio_manager.queue_cue("chime_error.wav")
                 self.orch.audio_manager.queue_system("gagal_memindai")
         self._save_qris_log(text)
 

@@ -40,6 +40,18 @@ def main():
     logger.info("AuralAI SDK — Starting up", module="Main")
     logger.info("=" * 50, module="Main")
 
+    # ── Boot voice cues (immediate, before any processing) ─────────────────────
+    # Announce power-on the instant we boot so a helper can observe the device is
+    # alive without waiting for WiFi/AI/web to come up. Runs in a daemon thread so
+    # it never blocks the rest of startup; cues are pre-recorded + PCM-cached.
+    def _boot_cues():
+        from core.audio_manager import play_wav_blocking
+        vol = cfg.get("audio_volume", 80)
+        play_wav_blocking("auralai_menyala.wav", audio_dir=cfg.AUDIO_DIR, volume=vol)
+        play_wav_blocking("menghubungkan_ke_wifi.wav", audio_dir=cfg.AUDIO_DIR, volume=vol)
+
+    threading.Thread(target=_boot_cues, daemon=True, name="BootCue").start()
+
     # ── Orchestrator ──────────────────────────────────────────────────────────
     orchestrator = Orchestrator(logger=logger)
 
@@ -62,6 +74,10 @@ def main():
 
     # ── Data Collector ────────────────────────────────────────────────────────
     data_collector = DataCollector(logger=logger)
+    # Share with the orchestrator so the AI loop can own the camera handoff when
+    # toggling Mode Ambil Data on/off (exactly one of AIEngine/DataCollector
+    # holds the camera at a time).
+    orchestrator.data_collector = data_collector
 
     # ── Web Server ────────────────────────────────────────────────────────────
     web_server = WebServer(

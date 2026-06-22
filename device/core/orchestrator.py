@@ -24,6 +24,7 @@ Thermal throttling
   the effective camera FPS by writing to cfg at runtime.
 """
 
+import queue
 import threading
 import time
 from typing import Optional
@@ -60,20 +61,46 @@ class Orchestrator:
         self._pending_command = None
         self._running         = True
 
+        # Detection-audio mute: monotonic deadline until which explorer-mode
+        # detection alerts stay silent, so a user action's audio (mode
+        # confirmation / description / repeat) isn't drowned by the spam right
+        # after they interact. Set via note_user_interaction(); read by the
+        # explorer tick through detection_audio_suppressed().
+        self._suppress_det_until = 0.0
+
         # ── Module references (set after init) ────────────────────────────────
         self.ai_engine:    object = None
         self.audio_manager: object = None
         self.watchdog:      object = None   # set by main.py
         self.onboarding:    object = None   # set by main.py (spoken-URL onboarding)
         self.mdns:          object = None   # set by main.py (mDNS publisher)
+        self.data_collector: object = None  # set by main.py (Mode Ambil Data)
 
         # ── Mode-change event (wakes AI loop when mode switches) ──────────────
         self._mode_event = threading.Event()
 
-        # ── Hardware button ────────────────────────────────────────────────────
-        pin = self._button_pin()
-        if pin:
-            self._start_button_listener(pin)
+        # ── Mode Ambil Data: set once the AI loop has released the aural camera
+        # and the device is idling in collection mode (camera free for capture).
+        self._collection_ready = threading.Event()
+
+        # ── Hardware buttons (MODE + ACTION) ─────────────────────────────────────
+        mode_pin = self._button_pin()
+        if mode_pin:
+            self._start_button_listener(mode_pin, self._on_button)
+        action_pin = self._action_pin()
+        if action_pin:
+            self._start_button_listener(action_pin, self._on_action_button)
+
+        # ── Simulated buttons (web fallback for dead hardware buttons) ───────────
+        # The companion web page can inject MODE/ACTION presses when the physical
+        # buttons are broken. Presses are handled on a dedicated worker thread —
+        # exactly like the GPIO BtnListener — so the HTTP handler never blocks and
+        # presses stay serialized (no concurrent switch_mode / model-reload races).
+        # Bounded queue: a flood of taps is dropped, never piled up → no backlog.
+        self._sim_btn_q: "queue.Queue" = queue.Queue(maxsize=8)
+        threading.Thread(
+            target=self._sim_button_worker, daemon=True, name="SimBtn"
+        ).start()
 
     # ─── Thread-safe properties ───────────────────────────────────────────────
 
@@ -179,6 +206,25 @@ class Orchestrator:
         except Exception:
             pass
 
+        # Data-collection snapshot (cheap attribute reads; DataCollector has its
+        # own lock for the heavy stats, so we avoid calling it under our lock).
+        dc = self.data_collector
+        dc_running = bool(getattr(dc, "is_running", False)) if dc else False
+        dc_count   = getattr(dc, "capture_count", 0) if dc else 0
+
+        # ── Context-mode latency + per-word cache state (/buttons dashboard) ───
+        try:
+            from utils.scene_metrics import scene_metrics as _sm
+            scene_metrics = _sm.snapshot()
+        except Exception:
+            scene_metrics = {"last": None, "summary": {"count": 0}, "history": []}
+        cached_words_total = 0
+        if self.audio_manager is not None:
+            try:
+                cached_words_total = self.audio_manager.cached_words_count()
+            except Exception:
+                pass
+
         with self._lock:
             return {
                 "mode":         self._mode,
@@ -191,6 +237,14 @@ class Orchestrator:
                 "latency":      dict(self._latency),
                 "audio_text":   audio_text,
                 "audio_mode":   cfg.get("audio_mode", "both"),
+                "scene_verbosity": cfg.get("scene_verbosity", "detail"),
+                # Per-word audio cache: "caching per-kata" (True) vs "satu blok
+                # audio" (False), the inter-word gap (ms; <0 = overlap), the
+                # number of warmed words, and recent describe latency.
+                "word_cache_enabled": bool(cfg.get("word_cache_enabled", True)),
+                "word_cache_gap_ms":  int(cfg.get("word_cache_gap_ms", -10)),
+                "cached_words_total": cached_words_total,
+                "scene_metrics":      scene_metrics,
                 "last_caption": last_caption,
                 "battery":      battery,
                 "wifi_signal":  wifi["signal"],
@@ -199,6 +253,11 @@ class Orchestrator:
                 "setup_completed": cfg.get("setup_completed", False),
                 "cam_w":        cfg.get("input_width",  320),
                 "cam_h":        cfg.get("input_height", 224),
+                # Mode Ambil Data — surfaced to the dashboard + cloud heartbeat
+                # so the mode and capture progress are diagnosable remotely.
+                "data_collection_mode": cfg.get("data_collection_mode", False),
+                "capturing":    bool(dc_running),
+                "capture_count": int(dc_count),
             }
 
     # ─── Hardware telemetry helpers (called from get_status) ──────────────────
@@ -373,31 +432,37 @@ class Orchestrator:
         # Wake up the AI loop so it picks up the new mode immediately
         self._mode_event.set()
 
+        # Mute detection alerts briefly so the mode confirmation is heard, not
+        # drowned by spam (a mode switch is always a deliberate user action).
+        self.note_user_interaction()
         if self.audio_manager:
+            self.audio_manager.queue_cue("chime_mode.wav")
             self.audio_manager.queue_system(f"mode_{new_mode}")
 
     # ─── Hardware button listener ─────────────────────────────────────────────
 
     @staticmethod
-    def _button_pin():
-        """Button pad name (e.g. 'A26'), or None when disabled."""
-        raw = cfg.get("button_pin_mode", -1)
+    def _pin_name(key):
+        """Resolve a button-pad config value to a pad name (e.g. 'A14') or None."""
+        raw = cfg.get(key, -1)
         if raw in (-1, "-1", "", None):
             return None
         if isinstance(raw, int):
             return f"A{raw}"          # legacy numeric config → CVITEK pad name
         return str(raw).strip() or None
 
-    def _start_button_listener(self, pin: str):
-        """
-        Monitor the button on GPIO `pin` (e.g. 'A26'), wired active-low to GND.
+    def _button_pin(self):
+        """MODE button pad name, or None when disabled."""
+        return self._pin_name("button_pin_mode")
 
-          During onboarding (setup not done & URL not acknowledged):
-              short press → repeat the spoken URL ("minta ulang")
-              long press  → acknowledge, stop announcing ("udah paham")
-          After onboarding:
-              short press → cycle AI mode (explorer→context→qris)
-              long press  → reserved (no-op)
+    def _action_pin(self):
+        """ACTION button pad name, or None when disabled."""
+        return self._pin_name("button_pin_action")
+
+    def _start_button_listener(self, pin: str, handler):
+        """
+        Monitor a button on GPIO `pin` (active-low to GND, internal pull-up) and
+        call handler(long_press: bool) on each completed press.
 
         Long-press threshold is cfg.button_longpress_s (default 1.0s).
         """
@@ -423,7 +488,7 @@ class Orchestrator:
                     elif last == 0 and v == 1:      # rising edge = released
                         dur = time.monotonic() - press_start
                         long_press = dur >= cfg.get("button_longpress_s", 1.0)
-                        self._on_button(long_press)
+                        handler(long_press)
                         time.sleep(0.05)            # debounce settle
                     last = v
                     time.sleep(0.02)
@@ -433,10 +498,89 @@ class Orchestrator:
                     module="Orchestrator",
                 )
 
-        threading.Thread(target=_loop, daemon=True, name="BtnListener").start()
+        threading.Thread(
+            target=_loop, daemon=True, name=f"BtnListener-{pin}"
+        ).start()
+
+    # ─── Simulated buttons (web UI) ───────────────────────────────────────────
+
+    def simulate_button(self, which: str, long_press: bool = False) -> bool:
+        """
+        Inject a MODE/ACTION button press from the web UI. Non-blocking: the
+        press is queued and processed on the SimBtn worker thread, so the HTTP
+        request returns immediately even if the press triggers a slow NPU model
+        reload. Returns False if `which` is invalid or the queue is saturated
+        (the press is then dropped rather than allowed to back up → no hang).
+        """
+        if which not in ("mode", "action"):
+            return False
+        try:
+            self._sim_btn_q.put_nowait((which, bool(long_press)))
+            return True
+        except queue.Full:
+            self.logger.warn(
+                "Simulated button dropped — worker busy (queue full)",
+                module="Orchestrator",
+            )
+            return False
+
+    def _sim_button_worker(self):
+        """
+        Serialize simulated presses onto a single thread, mirroring the physical
+        BtnListener exactly. A short get() timeout lets the thread notice
+        shutdown (_running=False) promptly so stop() never hangs.
+        """
+        while self._running:
+            try:
+                which, long_press = self._sim_btn_q.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                kind = "long" if long_press else "short"
+                self.logger.info(
+                    f"Simulated {which.upper()} button ({kind} press)",
+                    module="Orchestrator",
+                )
+                if which == "mode":
+                    self._on_button(long_press)
+                else:
+                    self._on_action_button(long_press)
+            except Exception as e:
+                self.logger.warn(
+                    f"Simulated button '{which}' failed: {e}",
+                    module="Orchestrator",
+                )
+
+    def note_user_interaction(self, window_s: Optional[float] = None):
+        """Start/refresh the detection-audio mute window after a user action,
+        so the resulting feedback is heard rather than buried under detection
+        spam. The press itself barges past the queue separately (user_barge_in)."""
+        try:
+            w = float(window_s if window_s is not None
+                      else cfg.get("detection_mute_after_interaction_s", 6.0))
+        except Exception:
+            w = 6.0
+        self._suppress_det_until = time.monotonic() + w
+
+    def detection_audio_suppressed(self) -> bool:
+        """True while detection alerts should stay silent (post-interaction)."""
+        return time.monotonic() < self._suppress_det_until
+
+    def _press_cue(self):
+        """Acknowledge a button press the instant it lands.
+
+        Barges past any detection spam already queued (flush + instant cue) so
+        the press is never stuck waiting in line, and mutes detection audio
+        briefly so the action it triggers (mode switch / describe / repeat) is
+        actually heard. This is the fix for "device stuck spamming 'orang di
+        depan' won't accept button clicks"."""
+        if self.audio_manager:
+            self.audio_manager.user_barge_in("chime_press.wav")
+        self.note_user_interaction()
 
     def _on_button(self, long_press: bool):
-        """Route a completed button press based on onboarding state."""
+        """Route a completed MODE-button press based on onboarding state."""
+        self._press_cue()
         onboarding_active = (
             not cfg.get("setup_completed", False)
             and not cfg.get("url_ack", False)
@@ -454,6 +598,33 @@ class Orchestrator:
                 self.onboarding.announce(force=True)
         else:
             self.switch_mode(self._MODE_CYCLE[self.mode])
+
+    def _on_action_button(self, long_press: bool):
+        """
+        ACTION button: on-demand capture (1 press = 1 API call).
+
+          short → describe scene (explorer/context) or scan QRIS (qris mode)
+          long  → re-speak the last result the user heard
+
+        Inert during onboarding to avoid confusing first-boot.
+        """
+        self._press_cue()
+        onboarding_active = (
+            not cfg.get("setup_completed", False)
+            and not cfg.get("url_ack", False)
+        )
+        if onboarding_active:
+            return
+        if long_press:
+            # Repeat the last thing spoken (description / QRIS result).
+            if self.audio_manager:
+                last = self.audio_manager.last_caption.get("text", "")
+                if last:
+                    self.audio_manager.queue_info(last)
+            return
+        # Short press: trigger the current mode's capture via the same command
+        # path the Web UI uses, so it runs on the AI loop thread (not GPIO).
+        self.set_pending_command("qris" if self.mode == "qris" else "describe")
 
     # ─── Thermal throttling callbacks ─────────────────────────────────────────
 
@@ -475,15 +646,14 @@ class Orchestrator:
 
     # ─── Main AI loop ─────────────────────────────────────────────────────────
 
-    def run_ai_loop(self):
-        """Entry point for the AI thread."""
-        from core.ai_engine    import AIEngine
-        from core.audio_manager import AudioManager
+    # ─── Mode Ambil Data — camera ownership handoff ───────────────────────────
+    # Invariant: exactly one of {AIEngine, DataCollector} holds the camera.
+    # All three helpers run on the AI-loop thread so open/close never races.
 
-        self.ai_engine     = AIEngine(orchestrator=self, logger=self.logger)
-        self.audio_manager = AudioManager(orchestrator=self, logger=self.logger)
-
-        # Register AI engine with watchdog if available
+    def _start_aural_engine(self):
+        """Construct AIEngine (opens camera + model) and register the watchdog."""
+        from core.ai_engine import AIEngine
+        self.ai_engine = AIEngine(orchestrator=self, logger=self.logger)
         if self.watchdog:
             self.watchdog.register(
                 "ai_engine",
@@ -491,7 +661,74 @@ class Orchestrator:
                 restart_fn=self.ai_engine.reload,
             )
 
-        self.logger.ok("AI Engine + Audio Manager ready", module="Orchestrator")
+    def _enter_collection_mode(self, announce: bool = False):
+        """Release the aural camera and auto-start dataset capture."""
+        # Unregister first so the watchdog can't reload AIEngine (→ reopen camera)
+        # while we're in collection mode.
+        if self.ai_engine is not None:
+            if self.watchdog:
+                try:
+                    self.watchdog.unregister("ai_engine")
+                except Exception:
+                    pass
+            try:
+                self.ai_engine.release()
+            except Exception as e:
+                self.logger.warn(f"AIEngine release failed: {e}", module="Orchestrator")
+            self.ai_engine = None
+
+        self._collection_ready.set()
+
+        # Auto-start: the helper just powers the device on and walks.
+        dc = self.data_collector
+        if dc is not None and not dc.is_running:
+            try:
+                dc.start()
+            except Exception as e:
+                self.logger.warn(f"Auto-start capture failed: {e}", module="Orchestrator")
+
+        if announce and self.audio_manager:
+            self.audio_manager.queue(
+                "Mode ambil data aktif.", label="datacol_on", cooldown=0,
+                wav_name="mode_ambil_data_aktif.wav")
+            self.audio_manager.queue(
+                "Mengambil data.", label="datacol_capturing", cooldown=0,
+                wav_name="mengambil_data.wav")
+
+    def _exit_collection_mode(self):
+        """Stop capture, free its camera, and bring the aural engine back."""
+        self._collection_ready.clear()
+        dc = self.data_collector
+        if dc is not None and dc.is_running:
+            try:
+                dc.stop()                 # joins capture thread, releases camera
+            except Exception as e:
+                self.logger.warn(f"Stop capture failed: {e}", module="Orchestrator")
+        self._start_aural_engine()
+        if self.audio_manager:
+            self.audio_manager.queue(
+                "Mode normal aktif.", label="datacol_off", cooldown=0,
+                wav_name="mode_normal_aktif.wav")
+
+    def run_ai_loop(self):
+        """Entry point for the AI thread."""
+        from core.audio_manager import AudioManager
+
+        # AudioManager is always built — needed for cues/feedback in every mode.
+        self.audio_manager = AudioManager(orchestrator=self, logger=self.logger)
+
+        # Mode Ambil Data is sticky across reboots. If the device booted into it,
+        # never construct AIEngine (its __init__ would grab the camera the data
+        # collector needs); hand the camera straight to capture instead.
+        if cfg.get("data_collection_mode", False):
+            self.logger.ok(
+                "Booting in Mode Ambil Data — aural pipeline skipped",
+                module="Orchestrator",
+            )
+            self._enter_collection_mode(announce=True)
+        else:
+            self._start_aural_engine()
+            self.logger.ok("AI Engine + Audio Manager ready", module="Orchestrator")
 
         while self._running:
             # Heartbeat from the loop itself: the engine thread is alive even
@@ -499,7 +736,7 @@ class Orchestrator:
             # (Repeated camera re-init on a leaked VI channel exhausts buffers
             #  → "No buffer space available" → SIGSEGV. Recovery is handled
             #  gently with backoff inside AIEngine.capture_and_infer instead.)
-            if self.watchdog:
+            if self.watchdog and self.ai_engine is not None:
                 self.watchdog.heartbeat("ai_engine")
 
             # Clear the mode-change event at the top of each cycle
@@ -509,6 +746,22 @@ class Orchestrator:
             cmd = self.pop_pending_command()
             if cmd:
                 self._handle_command(cmd)
+
+            # ── Mode Ambil Data live transitions ──────────────────────────────
+            # Both camera open/close happen here on the AI thread so AIEngine and
+            # DataCollector never touch the camera concurrently.
+            want_collection = cfg.get("data_collection_mode", False)
+            if want_collection and self.ai_engine is not None:
+                self.logger.info("Switching → Mode Ambil Data", module="Orchestrator")
+                self._enter_collection_mode(announce=True)
+            elif not want_collection and self.ai_engine is None:
+                self.logger.info("Switching → Mode Normal", module="Orchestrator")
+                self._exit_collection_mode()
+
+            if want_collection:
+                # Camera owned by DataCollector; no inference, no detection audio.
+                self._mode_event.wait(timeout=0.2)
+                continue
 
             # Cloud camera-QR pairing: while unpaired, watch frames for a pairing
             # QR shown in the browser and let the device claim itself.
@@ -541,19 +794,30 @@ class Orchestrator:
         cmd  = cmd_obj.get("cmd")
         data = cmd_obj.get("data", {})
 
+        # Any web/queued command is a deliberate user action — mute detection
+        # spam so its feedback is heard, not buried.
+        self.note_user_interaction()
+
         if cmd == "focus":
             self.activate_ai_focus()
 
         elif cmd == "set_mode":
+            # Flush any detection spam already queued so the confirmation plays
+            # immediately (the button path barges in itself; this covers the
+            # web /command path where there's no press cue).
+            if self.audio_manager:
+                self.audio_manager.clear()
             self.switch_mode(data.get("mode", "explorer"))
 
         elif cmd == "qris":
             if self.ai_engine:
                 self.ai_engine.trigger_qris_scan()
+            self.note_user_interaction()   # keep the result audible after the scan
 
         elif cmd == "describe":
             if self.ai_engine:
                 self.ai_engine.trigger_scene_description()
+            self.note_user_interaction()   # keep the description audible after it returns
 
         elif cmd == "update_config":
             cfg.update(data)

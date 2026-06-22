@@ -502,6 +502,125 @@
       .camera-section { max-height: 60dvh; }
       .gallery-grid   { grid-template-columns: repeat(4, 1fr); }
     }
+
+    /* ══ MODE AMBIL DATA — hero toggle (non-technical first) ═════ */
+    .mode-hero {
+      padding: 20px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg2);
+    }
+    .mode-hero-top {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .mode-hero-icon { font-size: 30px; line-height: 1; }
+    .mode-hero-title {
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+      line-height: 1.3;
+    }
+    .mode-hero-state {
+      margin-left: auto;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 5px 12px;
+      border-radius: 20px;
+      letter-spacing: 1px;
+      white-space: nowrap;
+      border: 1px solid var(--border);
+      color: var(--text3);
+      background: var(--bg3);
+    }
+    .mode-hero-state.on {
+      color: #04110d;
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    .mode-desc {
+      font-size: 13.5px;
+      line-height: 1.55;
+      color: var(--text2);
+    }
+    /* The one big switch a non-technical helper presses. */
+    .mode-toggle-btn {
+      width: 100%;
+      padding: 20px;
+      border: none;
+      border-radius: var(--r);
+      font-family: var(--font);
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      cursor: pointer;
+      transition: transform 0.12s, filter 0.12s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      min-height: 60px;
+    }
+    .mode-toggle-btn:active { transform: scale(0.985); }
+    .mode-toggle-btn.is-off {
+      background: var(--accent);
+      color: #04110d;
+    }
+    .mode-toggle-btn.is-on {
+      background: rgba(239,68,68,0.12);
+      color: var(--red);
+      border: 2px solid var(--red);
+    }
+    .mode-toggle-btn:disabled { opacity: 0.5; cursor: default; }
+
+    /* Recording banner shown while the mode is active */
+    .rec-banner {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 16px;
+      background: rgba(0,212,170,0.08);
+      border-bottom: 1px solid var(--border);
+    }
+    .rec-banner.paused { background: rgba(245,158,11,0.08); }
+    .rec-dot {
+      width: 12px; height: 12px; border-radius: 50%;
+      background: var(--red);
+      box-shadow: 0 0 10px var(--red);
+      animation: pulse 1.3s infinite;
+      flex-shrink: 0;
+    }
+    .rec-banner.paused .rec-dot { background: var(--orange); box-shadow: none; animation: none; }
+    .rec-text { font-size: 14px; font-weight: 700; }
+    .rec-sub  { font-size: 11px; color: var(--text3); margin-top: 2px; }
+    .rec-count {
+      margin-left: auto;
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--accent);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* Whole technical workspace is hidden until the mode is on */
+    #workspace { display: none; }
+    body.mode-on #workspace { display: block; }
+    body.mode-on .mode-intro { display: none; }
+
+    /* Advanced settings collapsed by default for non-technical helpers */
+    .advanced summary {
+      cursor: pointer;
+      font-size: 11px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: var(--text3);
+      padding: 4px 0;
+      list-style: none;
+    }
+    .advanced summary::-webkit-details-marker { display: none; }
+    .advanced summary::before { content: '⚙ '; }
   </style>
 </head>
 <body>
@@ -534,6 +653,44 @@
       </div>
     </div>
   </header>
+
+  <!-- ── MODE AMBIL DATA — hero toggle (primary control) ─────── -->
+  <section class="mode-hero" aria-labelledby="modeHeroTitle">
+    <div class="mode-hero-top">
+      <span class="mode-hero-icon" aria-hidden="true">📷</span>
+      <span class="mode-hero-title" id="modeHeroTitle">Mode Ambil Data</span>
+      <span class="mode-hero-state" id="modeState" aria-live="polite">MATI</span>
+    </div>
+    <p class="mode-desc" id="modeDesc">
+      Saat dinyalakan, alat akan fokus memotret terus-menerus untuk
+      mengumpulkan data. Fitur bantu suara untuk tunanetra dimatikan sementara.
+      Cukup nyalakan, lalu bawa alatnya jalan-jalan.
+    </p>
+    <button class="mode-toggle-btn is-off" id="modeToggleBtn"
+            onclick="toggleMode()" aria-pressed="false"
+            aria-label="Nyalakan atau matikan Mode Ambil Data">
+      <span id="modeToggleText">▶  Nyalakan Mode Ambil Data</span>
+    </button>
+  </section>
+
+  <!-- Friendly hint shown only when the mode is OFF -->
+  <div class="mode-intro" style="padding:18px 16px;color:var(--text3);font-size:13px;line-height:1.6;text-align:center;">
+    Mode ambil data sedang <strong>mati</strong>.<br/>
+    Tekan tombol hijau di atas untuk mulai mengumpulkan foto.
+  </div>
+
+  <!-- ── WORKSPACE (visible only while Mode Ambil Data is ON) ─── -->
+  <main id="workspace">
+
+  <!-- Recording status banner -->
+  <div class="rec-banner" id="recBanner" role="status" aria-live="polite">
+    <span class="rec-dot" id="recDot" aria-hidden="true"></span>
+    <div>
+      <div class="rec-text" id="recText">Sedang merekam</div>
+      <div class="rec-sub" id="recSub">Foto tersimpan otomatis di alat</div>
+    </div>
+    <div class="rec-count" id="recCount" aria-label="Jumlah foto">0</div>
+  </div>
 
   <!-- ── CAMERA PREVIEW ──────────────────────────────────────── -->
   <div class="camera-section">
@@ -578,31 +735,34 @@
 
   <!-- ── CONTROLS ─────────────────────────────────────────────── -->
   <div class="controls">
-    <!-- Main action button (Start / Stop) -->
-    <button class="main-btn btn-start" id="mainBtn" onclick="toggleCapture()" aria-label="Mulai atau hentikan capture foto otomatis">
-      <span id="mainBtnIcon" aria-hidden="true">▶</span>
-      <span id="mainBtnText">Mulai Capture</span>
+    <!-- Pause / resume capture without leaving the mode -->
+    <button class="main-btn btn-stop" id="mainBtn" onclick="toggleCapture()" aria-label="Jeda atau lanjutkan pemotretan">
+      <span id="mainBtnIcon" aria-hidden="true">⏸</span>
+      <span id="mainBtnText">Jeda Sebentar</span>
     </button>
 
-    <!-- Interval & Quality settings -->
-    <div class="settings-row">
-      <div class="setting-group" role="group" aria-labelledby="intervalLabel">
-        <div class="setting-label" id="intervalLabel">Interval (detik)</div>
-        <div class="setting-control">
-          <button class="setting-btn" onclick="adjustInterval(-0.5)" aria-label="Kurangi interval capture">−</button>
-          <div class="setting-val" id="intervalDisplay" aria-live="polite" aria-atomic="true">1.0</div>
-          <button class="setting-btn" onclick="adjustInterval(+0.5)" aria-label="Tambah interval capture">+</button>
+    <!-- Advanced settings — collapsed; non-technical helpers can ignore -->
+    <details class="advanced">
+      <summary>Pengaturan lanjutan</summary>
+      <div class="settings-row" style="margin-top:10px;">
+        <div class="setting-group" role="group" aria-labelledby="intervalLabel">
+          <div class="setting-label" id="intervalLabel">Jeda antar foto (detik)</div>
+          <div class="setting-control">
+            <button class="setting-btn" onclick="adjustInterval(-0.5)" aria-label="Kurangi interval capture">−</button>
+            <div class="setting-val" id="intervalDisplay" aria-live="polite" aria-atomic="true">1.0</div>
+            <button class="setting-btn" onclick="adjustInterval(+0.5)" aria-label="Tambah interval capture">+</button>
+          </div>
+        </div>
+        <div class="setting-group" role="group" aria-labelledby="qualityLabel">
+          <div class="setting-label" id="qualityLabel">Kualitas foto</div>
+          <div class="setting-control">
+            <button class="setting-btn" onclick="adjustQuality(-5)" aria-label="Kurangi kualitas JPEG">−</button>
+            <div class="setting-val" id="qualityDisplay" aria-live="polite" aria-atomic="true">85</div>
+            <button class="setting-btn" onclick="adjustQuality(+5)" aria-label="Tambah kualitas JPEG">+</button>
+          </div>
         </div>
       </div>
-      <div class="setting-group" role="group" aria-labelledby="qualityLabel">
-        <div class="setting-label" id="qualityLabel">JPEG Quality</div>
-        <div class="setting-control">
-          <button class="setting-btn" onclick="adjustQuality(-5)" aria-label="Kurangi kualitas JPEG">−</button>
-          <div class="setting-val" id="qualityDisplay" aria-live="polite" aria-atomic="true">85</div>
-          <button class="setting-btn" onclick="adjustQuality(+5)" aria-label="Tambah kualitas JPEG">+</button>
-        </div>
-      </div>
-    </div>
+    </details>
   </div>
 
   <!-- ── STORAGE BAR ─────────────────────────────────────────── -->
@@ -626,6 +786,9 @@
       <div class="gallery-empty">Foto akan muncul di sini setelah capture dimulai</div>
     </div>
   </div>
+
+  </main>
+  <!-- ── end #workspace ──────────────────────────────────────── -->
 
   <!-- ── FULLSCREEN VIEWER ──────────────────────────────────── -->
   <div class="viewer-overlay" id="viewerOverlay" role="dialog" aria-modal="true" aria-labelledby="viewerMeta" onclick="closeViewer(event)">
@@ -656,6 +819,7 @@ const GALLERY_INTERVAL= 3000;  // ms antar refresh gallery
 // STATE
 // ══════════════════════════════════════════════════════════════
 let state = {
+  mode:         false,  // Mode Ambil Data on/off (persistent on device)
   running:      false,
   connected:    false,
   intervalS:    1.0,
@@ -666,6 +830,7 @@ let state = {
   totalMb:      null,
   gallery:      [],
   _viewerFile:  null,   // filename currently open in viewer
+  _modeBusy:    false,  // debounce while a mode toggle is in flight
 };
 
 // ══════════════════════════════════════════════════════════════
@@ -720,12 +885,23 @@ async function pollStatus() {
     state.intervalS    = data.interval_s   || state.intervalS;
     state.quality      = data.quality      || state.quality;
 
+    // Mode is owned by the device (persists across reboot); trust it unless we
+    // have an in-flight toggle we haven't seen reflected yet.
+    if (!state._modeBusy && typeof data.data_collection_mode === 'boolean') {
+      state.mode = data.data_collection_mode;
+    }
+
     if (data.running && !state.startTime) {
-      state.startTime = Date.now() - (data.elapsed_s * 1000);
+      // Clamp: ignore an absurd elapsed_s (>7 days) so a stale/clock-jumped
+      // value can never render the "29697768:17" timer. Treat as just-started.
+      const e = (typeof data.elapsed_s === 'number' && data.elapsed_s >= 0 && data.elapsed_s < 604800)
+        ? data.elapsed_s : 0;
+      state.startTime = Date.now() - (e * 1000);
     } else if (!data.running) {
       state.startTime = null;
     }
 
+    applyModeUI();
     updateUI();
   } catch (e) {
     /* silently ignore — preview errors handle disconnect */
@@ -829,24 +1005,103 @@ function updateUI() {
   // Scanline
   document.getElementById('scanline').classList.toggle('active', state.running);
 
-  // Main button
+  // Pause / resume button (within the mode — does not exit Mode Ambil Data)
   const btn    = document.getElementById('mainBtn');
   const icon   = document.getElementById('mainBtnIcon');
   const label  = document.getElementById('mainBtnText');
   if (state.running) {
     btn.className   = 'main-btn btn-stop';
-    icon.textContent= '■';
-    label.textContent = 'Hentikan Capture';
+    icon.textContent= '⏸';
+    label.textContent = 'Jeda Sebentar';
   } else {
     btn.className   = 'main-btn btn-start';
     icon.textContent= '▶';
-    label.textContent = 'Mulai Capture';
+    label.textContent = 'Lanjutkan Merekam';
   }
 }
 
 function setStatus(type, text) {
   document.getElementById('statusDot').className  = `status-dot ${type}`;
   document.getElementById('statusText').textContent = text;
+}
+
+// ══════════════════════════════════════════════════════════════
+// MODE AMBIL DATA (the one big switch)
+// ══════════════════════════════════════════════════════════════
+function applyModeUI() {
+  document.body.classList.toggle('mode-on', state.mode);
+
+  const stateBadge = document.getElementById('modeState');
+  const btn        = document.getElementById('modeToggleBtn');
+  const btnText    = document.getElementById('modeToggleText');
+
+  if (state.mode) {
+    stateBadge.textContent = 'NYALA';
+    stateBadge.classList.add('on');
+    btn.className = 'mode-toggle-btn is-on';
+    btn.setAttribute('aria-pressed', 'true');
+    btnText.textContent = '■  Matikan Mode Ambil Data';
+  } else {
+    stateBadge.textContent = 'MATI';
+    stateBadge.classList.remove('on');
+    btn.className = 'mode-toggle-btn is-off';
+    btn.setAttribute('aria-pressed', 'false');
+    btnText.textContent = '▶  Nyalakan Mode Ambil Data';
+  }
+
+  // Recording banner (only meaningful while the mode is on)
+  const banner = document.getElementById('recBanner');
+  document.getElementById('recCount').textContent = state.captureCount.toLocaleString('id');
+  if (state.running) {
+    banner.classList.remove('paused');
+    document.getElementById('recText').textContent = 'Sedang merekam';
+    document.getElementById('recSub').textContent  = 'Foto tersimpan otomatis di alat';
+  } else {
+    banner.classList.add('paused');
+    document.getElementById('recText').textContent = 'Dijeda';
+    document.getElementById('recSub').textContent  = 'Tekan "Lanjutkan" untuk merekam lagi';
+  }
+}
+
+async function toggleMode() {
+  const enable = !state.mode;
+  // Confirm first: switching Mode Ambil Data rebuilds the AI engine + reopens the
+  // camera (~30s reload) and is the fragile path that can wedge the device. A
+  // non-technical helper usually means "pause" — steer them to Stop instead.
+  const msg = enable
+    ? 'Nyalakan Mode Ambil Data?\n\nAlat menyiapkan kamera ±30 detik — tunggu, jangan tutup halaman.'
+    : 'Matikan Mode Ambil Data?\n\n⚠ Ini bukan tombol jeda. Alat akan reload ±30 detik.\nUntuk sekadar berhenti merekam sebentar, pakai tombol STOP.\n\nTetap matikan mode?';
+  if (!confirm(msg)) return;
+  state._modeBusy = true;
+  state.mode = enable;             // optimistic
+  applyModeUI();
+  const btn = document.getElementById('modeToggleBtn');
+  btn.disabled = true;
+  showToast(enable ? 'Menyalakan mode ambil data…' : 'Mematikan mode…');
+  try {
+    const res  = await fetch(`${BASE_URL}/collect/mode`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ enabled: enable }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      state.mode = !!data.data_collection_mode;
+      showToast(state.mode ? 'Mode ambil data NYALA' : 'Mode ambil data MATI', 'ok');
+    } else {
+      state.mode = !enable;       // rollback
+      showToast(`Gagal: ${data.error || data.message || '—'}`, 'err');
+    }
+  } catch (e) {
+    state.mode = !enable;         // rollback
+    showToast('Tidak bisa terhubung ke alat', 'err');
+  } finally {
+    btn.disabled = false;
+    // Give the device a moment to finish the camera handoff before we trust
+    // /collect/status again (auto-start capture happens on the device).
+    setTimeout(() => { state._modeBusy = false; }, 2500);
+    applyModeUI();
+  }
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1027,6 +1282,7 @@ function showToast(msg, type = '') {
 // INIT
 // ══════════════════════════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', () => {
+  applyModeUI();
   updateUI();
   refreshPreview();
   setTimeout(pollStatus,  500);

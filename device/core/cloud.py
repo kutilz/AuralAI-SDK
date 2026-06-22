@@ -144,6 +144,11 @@ class CloudClient:
                 "wifi": status.get("wifi_ssid") or status.get("wifi"),
                 "battery": status.get("battery"),
                 "online": True,
+                # Mode Ambil Data — lets the web hub show/diagnose the device
+                # remotely while a helper is out collecting data.
+                "data_collection_mode": status.get("data_collection_mode"),
+                "capturing": status.get("capturing"),
+                "capture_count": status.get("capture_count"),
             }
         except Exception:
             status = {"online": True}
@@ -205,6 +210,11 @@ class CloudClient:
     # ─── announce helpers ──────────────────────────────────────────────────────
 
     def _announce_code(self):
+        # Mode Ambil Data: keep pairing/heartbeat working silently (so the device
+        # still shows up on the hub for diagnosis) but don't speak setup prompts.
+        if cfg.get("data_collection_mode", False):
+            self._last_announce = time.monotonic()
+            return
         if self.announcer is not None and self._code:
             try:
                 self.announcer.set_pairing_code(self._code, speak=True)
@@ -214,6 +224,8 @@ class CloudClient:
 
     def _fallback_local_announce(self):
         """Cloud unreachable — fall back to the local spoken-URL onboarding."""
+        if cfg.get("data_collection_mode", False):
+            return
         if self.announcer is not None and not cfg.SETUP_COMPLETED:
             try:
                 self.announcer.cloud_active = False

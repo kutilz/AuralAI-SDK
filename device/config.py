@@ -12,7 +12,11 @@ _CONFIG_PATH = Path("/root/config.json")
 
 _DEFAULTS: dict = {
     "model_path":               "/root/models/yolo11n.mud",
-    "conf_threshold":           0.5,
+    # Min YOLO confidence. Raised from 0.5 → 0.6: yolo11n at 320×224 emits
+    # stable mid-confidence "person" boxes on cluttered/blurred non-person
+    # scenes; 0.6 trims those while keeping real (closer) people that score
+    # higher. Pair with the detection de-flicker below. Tune per-device.
+    "conf_threshold":           0.6,
     "iou_threshold":            0.45,
     "input_width":              320,
     "input_height":             224,
@@ -24,10 +28,54 @@ _DEFAULTS: dict = {
     "audio_dir":                "/root/audio",
     "audio_cooldown_s":         2.0,
     "danger_area_threshold":    0.15,
+    # ── Distance tiers (per-class coarse near/far + ground hint) ──────────────
+    # distance.band() collapses a box into "near"/"far". The near cutoff is
+    # per-class (a car must fill more frame than a bottle to count as close);
+    # values are FIRST-GUESS area_ratios to calibrate on-device. Unknown labels
+    # use distance_near_area_default. A box resting low in the frame (its base
+    # near the bottom = on the ground in front) gets up to *_ground_nudge_max
+    # shaved off its cutoff, ramping in once the base is below *_ground_nudge_start.
+    # *_hysteresis_margin is the half-width of the near/far enter/exit band that
+    # stops a boundary-hovering object flapping (and re-announcing) every frame.
+    "distance_near_area": {
+        "bottle": 0.04, "handbag": 0.05, "backpack": 0.06, "cat": 0.06,
+        "dog": 0.10, "chair": 0.12, "person": 0.15, "bicycle": 0.16,
+        "motorcycle": 0.18, "car": 0.30, "truck": 0.38, "bus": 0.40,
+    },
+    "distance_near_area_default":   0.15,
+    "distance_ground_nudge_max":    0.25,
+    "distance_ground_nudge_start":  0.55,
+    "distance_hysteresis_margin":   0.10,
+    # ── Detection de-flicker (anti false-positive) ────────────────────────────
+    # A detected label must persist in roughly the same spot for this many
+    # consecutive frames before it's emitted/announced. Filters YOLO phantom
+    # boxes that flicker/teleport on a covered or blurred lens. Set to 1 to
+    # disable. detection_max_center_move is the max normalized (0..1) per-frame
+    # box-center jump still treated as the "same" object.
+    "detection_min_streak":      3,
+    "detection_max_center_move": 0.25,
+    # ── Detection audio back-off (anti-spam) ──────────────────────────────────
+    # A persistent/phantom detection ("orang di depan") announces at most this
+    # many times (spaced by audio_cooldown_s), then goes quiet — only an
+    # occasional reminder every detection_repeat_remind_s — until the alert
+    # changes (different object/position) or disappears. Stops the device getting
+    # stuck looping the same alert. Set detection_repeat_limit<=0 to disable.
+    "detection_repeat_limit":     3,
+    "detection_repeat_remind_s":  30.0,
+    # After a user presses a button / issues a command, mute detection audio for
+    # this long so the resulting action (mode confirmation, description, repeat)
+    # is heard instead of being drowned by detection alerts. The press itself
+    # always barges in (flushes the queue) regardless of this window.
+    "detection_mute_after_interaction_s": 6.0,
     # ── AI provider ───────────────────────────────────────────────────────────
     # active provider: "openai" | "gemini" | "claude"
     "ai_provider":              "openai",
     "ai_timeout_s":             15,
+    # After a cloud call runs this many seconds the progress cue switches from
+    # "masih memproses" to "koneksi internet lambat" (a slow/flaky network is
+    # then the likely cause). Keep it above a normal call time (~7 s) so routine
+    # captures don't get a false "slow network" warning every time.
+    "ai_slow_warn_s":           9,
     # OpenAI
     "openai_api_key":           "",
     "openai_model":             "gpt-4o-mini",
@@ -39,10 +87,22 @@ _DEFAULTS: dict = {
     "claude_api_key":           "",
     "claude_model":             "claude-haiku-4-5-20251001",
     # Prompts (runtime-editable)
+    # Context-mode scene description. Two verbosity levels, switchable live from
+    # the /buttons UI via `scene_verbosity` ("sedang" | "detail"). "detail" is
+    # the long, complete description; "sedang" is one short, consistent sentence
+    # — far faster to synthesize/play and far more likely to hit the per-word
+    # cache (so it gets instant as the vocabulary warms).
+    "scene_verbosity": "detail",
     "prompt_scene": (
         "Deskripsikan scene ini secara singkat dalam Bahasa Indonesia, "
         "fokus pada objek yang relevan untuk pengguna tunanetra. "
         "Maksimal 2 kalimat."
+    ),
+    "prompt_scene_sedang": (
+        "Sebutkan maksimal tiga objek terpenting di depan pengguna tunanetra "
+        "beserta posisinya (kiri, kanan, atau depan), dalam SATU kalimat "
+        "Bahasa Indonesia yang singkat, maksimal dua belas kata. Pakai kata "
+        "yang sederhana dan konsisten. Jangan memberi deskripsi panjang."
     ),
     "prompt_qris": (
         "Baca kode QRIS ini. Sebutkan: nama merchant dan nominal jika ada. "
@@ -54,10 +114,17 @@ _DEFAULTS: dict = {
     "thermal_throttle_temp_c":  80.0,
     "thermal_throttle_fps":     10,
     "watchdog_timeout_s":       5.0,
-    # Hardware button pad name (e.g. "A26"); -1 or "" = disabled.
-    # A26 idles HIGH on this board, so wire button → A26 ↔ GND (active-low),
-    # no external resistor needed. Doubles as onboarding "repeat/ack" + mode-cycle.
-    "button_pin_mode":          "A26",
+    # ── Hardware buttons (active-low to GND; internal pull-up, no resistor) ───
+    # The GPIO listener enables PULL_UP, so any free standard GPIO works — wire
+    # each button: leg1 → pad, leg2 → GND. DO NOT use A26: it is WiFi EN on the
+    # WiFi board variant and a button there can toggle WiFi by accident.
+    # MODE button pad ("A14" recommended; "" or -1 = disabled). Short press
+    # cycles mode / repeats URL during onboarding; long press = web address / ack.
+    "button_pin_mode":          "A14",
+    # ACTION button pad ("A15" recommended; "" or -1 = disabled). Short press
+    # captures on demand (describe / QRIS scan); long press repeats last result.
+    # Safe alternates if A15 is taken: A22–A25 (only when SPI4 is unused).
+    "button_pin_action":        "A15",
     # Speaker volume (0-100); read by AudioManager on every play
     "audio_volume":             80,
     # Auth: device token (auto-generated on first boot if empty)
@@ -79,6 +146,23 @@ _DEFAULTS: dict = {
     # TTS hybrid: synthesize dynamic text via gTTS and cache on device
     "tts_enabled":              True,
     "tts_cache_dir":            "/root/audio/tts_cache",
+    # Per-word TTS cache (context mode). Scene sentences are near-unique but
+    # reuse a small Indonesian vocabulary, so caching audio per word lets a
+    # fully-seen sentence play with zero network. A missing word never drops a
+    # word ("ompong") — the whole sentence is spoken via gTTS and the missing
+    # words are warmed in the background for next time.
+    "word_cache_enabled":       True,
+    "word_cache_dir":           "/root/audio/word_cache",
+    # Smoothing for concatenated word audio (each gTTS word carries its own
+    # head/tail silence, which makes a naive concat sound choppy):
+    #   trim each word's silence, then a NEGATIVE gap overlaps adjacent words to
+    #   tighten them. All live-tunable via /config to taste.
+    "word_cache_gap_ms":        -10,   # <0 = overlap (smoother), >0 = inserted silence
+    "word_cache_trim_enabled":  True,
+    "word_cache_trim_threshold": 600,  # |amplitude| below this counts as silence
+    "word_cache_trim_margin_ms": 8,    # keep this much real audio around the signal
+    "word_warm_per_call":       8,     # words warmed (gTTS) per describe (gentle on the 1-core box)
+    "word_warm_gap_s":          0.5,   # pause between background warms (avoid load spikes)
     # I2C battery HAT: enabled only after manual probe via /i2c-probe endpoint
     "i2c_battery_enabled":      False,
     # Companion redesign (handoff §4.3) — audio playback preference
@@ -97,6 +181,14 @@ _DEFAULTS: dict = {
     # Asset directory for `/assets/*` static serving + manifest.json.
     # Photos that override the SVG mockups in /guide land here.
     "assets_dir":               "/root/assets",
+    # ── Mode Ambil Data (data-collection mode) ────────────────────────────────
+    # When True, the device skips the entire aural pipeline (setup nag, object
+    # detection, audio alerts) and dedicates the camera to dataset capture.
+    # Persistent — survives reboot (stored here in /root/config.json), so the
+    # device comes back up in this mode after a power cycle. Toggled live from
+    # the /collect page (POST /collect/mode). Lets a non-technical sighted helper
+    # carry the device around just to collect photos.
+    "data_collection_mode":     False,
     # ── Device identity & spoken-URL onboarding (multi-device) ────────────────
     # Friendly device name; "" → auto "aural-<mac-suffix>" (see utils/identity).
     # Becomes the mDNS `.local` label, so it must stay DNS-safe (UI sanitizes it).
@@ -128,6 +220,13 @@ _DEFAULTS: dict = {
     # Long-poll timeout (s) the device waits per /api/poll request.
     "cloud_poll_timeout_s":     35,
 }
+
+
+def select_scene_prompt(verbosity: str, sedang: str, detail: str) -> str:
+    """Pick the scene prompt for the given verbosity. Anything that isn't
+    exactly "sedang" falls back to the detailed prompt (safe default — never go
+    terse by accident)."""
+    return sedang if verbosity == "sedang" else detail
 
 
 class Config:
@@ -328,12 +427,20 @@ class Config:
         return self.get("button_pin_mode")
 
     @property
+    def BUTTON_PIN_ACTION(self) -> int:
+        return self.get("button_pin_action")
+
+    @property
     def AUDIO_VOLUME(self) -> int:
         return int(self.get("audio_volume", 80))
 
     @property
     def PROMPT_SCENE(self) -> str:
-        return self.get("prompt_scene", _DEFAULTS["prompt_scene"])
+        return select_scene_prompt(
+            self.get("scene_verbosity", "detail"),
+            self.get("prompt_scene_sedang", _DEFAULTS["prompt_scene_sedang"]),
+            self.get("prompt_scene", _DEFAULTS["prompt_scene"]),
+        )
 
     @property
     def PROMPT_QRIS(self) -> str:
@@ -461,10 +568,27 @@ LOG_MAX_LINES         = cfg.LOG_MAX_LINES
 PROMPT_SCENE          = cfg.PROMPT_SCENE
 PROMPT_QRIS           = cfg.PROMPT_QRIS
 
-RELEVANT_LABELS = {
-    "person", "bicycle", "car", "motorcycle", "bus", "truck",
-    "dog", "cat", "chair", "bottle", "handbag", "backpack",
+# ─── Single source of truth for the nav object set (T6 / DRY) ─────────────────
+# COCO label → Indonesian spoken id. This is the ONE canonical map; every other
+# place that needs the object set (RELEVANT_LABELS here, tools/generate_audio.py
+# OBJECTS, and audio_manager._LABEL_ID) must DERIVE from this so they can't drift.
+NAV_OBJECTS = {
+    "person":     "orang",
+    "motorcycle": "motor",
+    "car":        "mobil",
+    "bicycle":    "sepeda",
+    "bus":        "bus",
+    "truck":      "truk",
+    "dog":        "anjing",
+    "cat":        "kucing",
+    "chair":      "kursi",
+    "bottle":     "botol",
+    "handbag":    "tas",
+    "backpack":   "ransel",
 }
+
+# Derived, never hand-edited — keeps the announced set in lock-step with NAV_OBJECTS.
+RELEVANT_LABELS = set(NAV_OBJECTS.keys())
 
 COCO_LABEL_MAP = {
     0:  "person",       1:  "bicycle",   2:  "car",          3:  "motorcycle",

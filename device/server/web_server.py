@@ -315,6 +315,9 @@ class AuralAIHandler(BaseHTTPRequestHandler):
                 self._send_json(r)
             else:
                 self._send_json({"error": "Report not available — run suite first"}, 404)
+        # ── Button simulation page (web fallback for dead hardware buttons) ────
+        elif path == "/buttons" or path == "/buttons/":
+            self._serve_file("buttons.html", "text/html")
         # ── Data Collection endpoints ──────────────────────────────────────────
         elif path == "/collect" or path == "/collect/":
             self._serve_file("collect.html", "text/html")
@@ -352,6 +355,8 @@ class AuralAIHandler(BaseHTTPRequestHandler):
 
         if path == "/command":
             self._handle_command()
+        elif path == "/button":
+            self._handle_button()
         elif path == "/config":
             self._handle_config()
         # ── Benchmark ─────────────────────────────────────────────────────────
@@ -376,6 +381,8 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             ok, msg = _suite.report_only()
             self._send_json({"ok": ok, "message": msg})
         # ── Data Collection ───────────────────────────────────────────────────
+        elif path == "/collect/mode":
+            self._handle_collect_mode()
         elif path == "/collect/start":
             self._handle_collect_start()
         elif path == "/collect/stop":
@@ -412,9 +419,16 @@ class AuralAIHandler(BaseHTTPRequestHandler):
         "/benchmark/run", "/benchmark/stop",
         "/stress/start",  "/stress/stop",
         "/suite/start",   "/suite/stop", "/suite/report-only",
-        "/collect/start", "/collect/stop", "/collect/delete",
         "/presets/apply",
     }
+
+    # Data-collection endpoints stay OPEN on the LAN: the /collect page is meant
+    # to be driven by a non-technical helper from their phone with no login, and
+    # /auth/token is localhost-only (a remote browser can never obtain a token).
+    # The photos themselves are already readable without auth via GET /snapshot
+    # and GET /collect/photo, so gating start/stop/mode/delete added no real
+    # protection — only made the page unusable remotely. (/collect/mode toggles
+    # Mode Ambil Data; start/stop/delete control capture.)
 
     # Bootstrap mode — when setup_completed=False, these endpoints are needed
     # by the first-time setup wizard but the pendamping has no way to get a
@@ -784,6 +798,43 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             self.logger.error(f"Command error: {e}")
             self._send_json({"error": str(e)}, 500)
 
+    def _handle_button(self):
+        """
+        Inject a simulated MODE/ACTION button press — the web fallback for a
+        device whose physical buttons are dead. Body: {"button": "mode"|"action",
+        "long": bool}.
+
+        Stays OPEN on the LAN (not in _AUTH_REQUIRED_POSTS) for the same reason
+        as the /collect endpoints: a non-technical pendamping drives this from
+        their phone with no login, and /auth/token is localhost-only so a remote
+        browser can't fetch a token anyway. The press is queued + handled on the
+        orchestrator's SimBtn worker, so this returns immediately and can never
+        block the HTTP thread (even during a slow NPU model reload).
+        """
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            data   = json.loads(self.rfile.read(length)) if length else {}
+            which      = str(data.get("button", "")).strip().lower()
+            long_press = bool(data.get("long", False))
+            if which not in ("mode", "action"):
+                self._send_json(
+                    {"error": "button must be 'mode' or 'action'"}, 400)
+                return
+            queued = self.orch.simulate_button(which, long_press)
+            self.logger.info(
+                f"Web button: {which} ({'long' if long_press else 'short'}) "
+                f"{'queued' if queued else 'DROPPED'}",
+                module="WebServer",
+            )
+            self._send_json({
+                "ok":     queued,
+                "button": which,
+                "long":   long_press,
+                "queued": queued,
+            })
+        except Exception as e:
+            self._send_error(e)
+
     def _handle_config(self):
         try:
             length = int(self.headers.get("Content-Length", 0))
@@ -797,6 +848,27 @@ class AuralAIHandler(BaseHTTPRequestHandler):
                     "allowed": ["chime", "speech", "both"],
                 }, 400)
                 return
+            if "scene_verbosity" in data and data["scene_verbosity"] not in ("sedang", "detail"):
+                self._send_json({
+                    "error": "invalid scene_verbosity",
+                    "allowed": ["sedang", "detail"],
+                }, 400)
+                return
+            # Per-word audio cache toggle ("caching per-kata" vs "satu blok audio").
+            if "word_cache_enabled" in data:
+                data["word_cache_enabled"] = bool(data["word_cache_enabled"])
+            # Inter-word gap slider (ms). <0 overlaps words (smoother), >0 inserts
+            # silence. Clamp to a sane band so the slider can't wedge playback.
+            if "word_cache_gap_ms" in data:
+                try:
+                    gap = int(data["word_cache_gap_ms"])
+                except (TypeError, ValueError):
+                    self._send_json({
+                        "error": "invalid word_cache_gap_ms",
+                        "hint": "kirim bilangan bulat milidetik",
+                    }, 400)
+                    return
+                data["word_cache_gap_ms"] = max(-60, min(60, gap))
             if "setup_completed" in data:
                 data["setup_completed"] = bool(data["setup_completed"])
             # device_name becomes the mDNS `.local` label — keep it DNS-safe.
@@ -873,7 +945,29 @@ class AuralAIHandler(BaseHTTPRequestHandler):
         if self.dc is None:
             self._send_json({"error": "data collector not available"}, 503)
             return
-        self._send_json(self.dc.stats)
+        from config import cfg as _cfg
+        stats = dict(self.dc.stats)
+        # So the UI can render the Mode Ambil Data toggle state on load/poll.
+        stats["data_collection_mode"] = _cfg.get("data_collection_mode", False)
+        self._send_json(stats)
+
+    def _handle_collect_mode(self):
+        """Toggle Mode Ambil Data. Persists the flag and wakes the AI loop, which
+        owns the camera handoff (release aural ↔ auto-start capture). We do NOT
+        touch the camera here — that must stay on the AI thread to avoid races."""
+        try:
+            from config import cfg as _cfg
+            length  = int(self.headers.get("Content-Length", 0))
+            data    = json.loads(self.rfile.read(length)) if length else {}
+            enabled = bool(data.get("enabled"))
+            _cfg.update({"data_collection_mode": enabled})   # persist (survives reboot)
+            try:
+                self.orch._mode_event.set()                  # trigger live transition
+            except Exception:
+                pass
+            self._send_json({"ok": True, "data_collection_mode": enabled})
+        except Exception as e:
+            self._send_error(e)
 
     def _serve_collect_gallery(self):
         if self.dc is None:

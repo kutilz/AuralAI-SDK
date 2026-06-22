@@ -31,6 +31,9 @@ class OnboardingAnnouncer:
     # ─── gating ───────────────────────────────────────────────────────────────
 
     def _should_nag(self) -> bool:
+        # In Mode Ambil Data the device skips all setup — never nag about the URL.
+        if bool(cfg.get("data_collection_mode", False)):
+            return False
         return (
             bool(cfg.get("url_announce_enabled", True))
             and not bool(cfg.get("setup_completed", False))
@@ -116,6 +119,12 @@ class OnboardingAnnouncer:
             waited += 0.5
             am = getattr(self.orch, "audio_manager", None)
 
+        # Mode Ambil Data: no setup, no "ready" cue — the orchestrator already
+        # announces "Mode ambil data aktif" and capture auto-starts.
+        if bool(cfg.get("data_collection_mode", False)):
+            self.logger.info("Onboarding skipped — Mode Ambil Data", module="Onboard")
+            return
+
         # When cloud pairing is enabled, core/cloud.py owns first-boot
         # announcements (pairing code, or local-URL fallback if cloud is
         # unreachable). Skip the local nag here to avoid double-speaking.
@@ -137,6 +146,7 @@ class OnboardingAnnouncer:
                 else:
                     break
         elif am is not None:
+            am.queue_cue("chime_ready.wav")
             am.queue("AuralAI siap digunakan.", priority=NORMAL,
                      label="boot_ready", cooldown=0)
 

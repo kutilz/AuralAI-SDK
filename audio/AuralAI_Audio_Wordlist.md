@@ -11,6 +11,11 @@
 
 ### 1.1 Boot & Status
 ```
+auralai_menyala.wav             → "AuralAI menyala"
+menghubungkan_ke_wifi.wav       → "Menghubungkan ke WiFi"
+mode_ambil_data_aktif.wav       → "Mode ambil data aktif"
+mengambil_data.wav              → "Mengambil data"
+mode_normal_aktif.wav           → "Mode normal aktif"
 system_booting.wav              → "AuralAI sedang menyala"
 system_ready.wav                → "AuralAI siap digunakan"
 system_shutdown.wav             → "AuralAI dimatikan"

@@ -25,6 +25,12 @@ def run_explorer_tick(orch):
     if not detections or orch.audio_manager is None:
         return
 
+    # Just after a user interaction, stay quiet so the action's audio (mode
+    # confirmation / description / repeat) is heard instead of being drowned by
+    # detection alerts. Detections were still updated above for the dashboard.
+    if orch.detection_audio_suppressed():
+        return
+
     # Sort: dangerous first, then by confidence descending
     sorted_dets = sorted(
         detections,
