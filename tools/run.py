@@ -266,8 +266,14 @@ def run_background(client, mode_cfg, extra_args, host):
     pid_file = mode_cfg.get("pid_file") or f"/tmp/aural_{mode_cfg['script'].replace('.py','')}.pid"
     log_file = mode_cfg.get("log_file") or f"/tmp/aural_{mode_cfg['script'].replace('.py','')}.log"
 
+    # A manual relaunch is NOT a fresh boot, so the boot-chime flag from the last
+    # boot is stale (tmpfs /tmp survives an app restart, only a reboot clears it).
+    # Clear it so main.py's _boot_cue_fast replays "AuralAI menyala" on restart
+    # instead of skipping on the stale flag. Only main.py uses the flag; harmless
+    # for other modes.
+    clear_flag = "rm -f /tmp/.boot_chime_played; " if script == "main.py" else ""
     cmd = (
-        f"cd {cwd} && "
+        f"cd {cwd} && {clear_flag}"
         f"nohup python {script} {extra_args} > {log_file} 2>&1 & "
         f"echo $! > {pid_file} && echo $!"
     )
@@ -399,6 +405,28 @@ RC_LOCAL = "/etc/rc.local"
 RC_BEGIN = "# >>> AuralAI autostart >>>"
 RC_END   = "# <<< AuralAI autostart <<<"
 RC_BLOCK = (
+    RC_BEGIN + "\n"
+    "# Boot chime: play immediately via ALSA before Python loads (~0.1s vs ~6s).\n"
+    "# Only set the .boot_chime_played flag when the PCM actually exists, so that\n"
+    "# main.py's _boot_cue_fast can tell 'aplay played it' (flag set) apart from\n"
+    "# 'PCM missing, nothing played' (flag absent → it regenerates + plays).\n"
+    "# To revert to old behavior: replace RC_BLOCK with RC_BLOCK_LEGACY in this\n"
+    "# file and re-run: python tools/run.py --autostart\n"
+    "sleep 1\n"
+    "if [ -f /root/audio/auralai_menyala.pcm ]; then\n"
+    "  aplay -q -D hw:1,0 -t raw -f S16_LE -r 48000 -c 1 /root/audio/auralai_menyala.pcm 2>/dev/null &\n"
+    "  touch /tmp/.boot_chime_played\n"
+    "fi\n"
+    "cd /root/aural-ai\n"
+    "nohup python3 /root/aural-ai/main.py >> /tmp/aural_main.log 2>&1 &\n"
+    "echo $! > /tmp/aural_main.pid\n"
+    + RC_END + "\n"
+)
+
+# Original autostart block (pre-boot-optimization). To revert:
+# 1. Replace RC_BLOCK with RC_BLOCK_LEGACY above
+# 2. Re-run: python tools/run.py --autostart
+RC_BLOCK_LEGACY = (
     RC_BEGIN + "\n"
     "sleep 5\n"
     "cd /root/aural-ai\n"
