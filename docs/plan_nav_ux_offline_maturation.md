@@ -127,6 +127,8 @@ No CRITICAL GAPS remaining (all silent-failure rows now rescued + tested + logge
 ## Implementation Tasks
 Synthesized from this review. Run with /tdd; checkbox as you ship.
 
+**Build status (2026-06-23):** DONE — T0 (baseline 40✓), T1/T2/T10/T12 (AnnouncePolicy, 10 tests), T4 (offline fallback + earcon, 3 tests), T3/T11 (distance tiers + hysteresis, 11 tests), T5/T6 (atempo + coverage + SSOT, 12 tests). **76 tests passing.** REMAINING — T7 "thinking" earcon (atempo done), T8 espeak spike, T9 JPEG downscale; plus deploy (regen audio WAVs on PC incl. new `_near`/`objek_`/`chime_obstacle`, scp to device), on-demand force-readout gesture wiring, on-device calibration of distance thresholds + atempo rate.
+
 - [ ] **T0 (P1, human ~1h / CC ~10min)** — repo — get existing pytest suite green on current tree before TDD.
   - Surfaced by: Outside voice #4 — dirty +1682-line tree.
   - Verify: `pytest device/tests/ -q`

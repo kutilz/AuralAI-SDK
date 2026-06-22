@@ -31,16 +31,9 @@ def run_explorer_tick(orch):
     if orch.detection_audio_suppressed():
         return
 
-    # Sort: dangerous first, then by confidence descending
-    sorted_dets = sorted(
-        detections,
-        key=lambda d: (d.get("is_danger", False), d.get("confidence", 0)),
-        reverse=True,
-    )
-
-    for det in sorted_dets[:2]:
-        orch.audio_manager.queue_object(
-            label=det["label"],
-            position=det["position"],
-            is_danger=det.get("is_danger", False),
-        )
+    # Single nav-speech gate (Decision 1A/E1A): the AnnouncePolicy ranks
+    # danger/near first, speaks on change, re-announces an approaching hazard on
+    # a timer, and stays quiet on an unchanged calm scene — replacing the old
+    # "top-2 every tick + back-off" loop. Ranking and the per-tick cap live
+    # inside the policy.
+    orch.audio_manager.announce_detections(detections)

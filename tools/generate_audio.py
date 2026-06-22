@@ -95,6 +95,10 @@ CHIMES = {
     "chime_error":   [(440, 120), (330, 150)],           # descending — failed
     "chime_ready":   [(523, 90), (659, 90), (784, 130)], # C-E-G — boot ready
     "chime_mode":    [(880, 70)],                        # neutral blip — mode switch
+    # Last-resort obstacle earcon: played when even the generic per-direction
+    # phrase is unavailable offline, so a detection is NEVER silent (Decision 4A).
+    # Two short low pulses = "something there", distinct from the success/error tones.
+    "chime_obstacle": [(500, 90), (0, 40), (500, 90)],
 }
 
 
@@ -209,12 +213,21 @@ def build_audio_list():
     """Buat list semua (filename, text) yang perlu di-generate."""
     items = []
 
-    # Object detection audio
+    # Object detection audio. The plain `obj_<label>_<pos>.wav` doubles as the
+    # FAR-tier phrase (runtime falls back to it when no `_far` file exists), so
+    # we only render an extra NEAR variant that appends "dekat" for the urgency
+    # cue the assessment asked for ("orang di depan dekat").
     for obj_key, obj_id in OBJECTS.items():
         for pos_key, pos_id in POSITIONS.items():
-            filename = f"obj_{obj_key}_{pos_key}.wav"
-            text = f"{obj_id} {pos_id}"
-            items.append((filename, text))
+            items.append((f"obj_{obj_key}_{pos_key}.wav", f"{obj_id} {pos_id}"))
+            items.append((f"obj_{obj_key}_{pos_key}_near.wav",
+                          f"{obj_id} {pos_id} dekat"))
+
+    # Generic per-direction fallback ("ada objek di depan"): spoken when a
+    # specific label's WAV is missing while OFFLINE, so a blind user never gets
+    # silence on a real detection (Decision 4A). One per position, label-agnostic.
+    for pos_key, pos_id in POSITIONS.items():
+        items.append((f"objek_{pos_key}.wav", f"ada objek {pos_id}"))
 
     # System events
     for event_key, event_text in SYSTEM_EVENTS.items():

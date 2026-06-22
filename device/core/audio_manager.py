@@ -22,6 +22,7 @@ from typing import Optional
 from utils.word_cache import WordCache, plan_utterance, assemble_words, tokenize
 from utils.scene_metrics import scene_metrics
 from utils.detection_gate import decide_announce, prune
+from utils.announce_policy import decide as _announce_decide
 
 CRITICAL = 0
 HIGH     = 1
@@ -242,6 +243,11 @@ class AudioManager:
         self._det_states: dict = {}
         self._det_prune_at = 0.0
 
+        # AnnouncePolicy state (Decision 1A/E1A): per-label memory of what was
+        # last announced. Owned here, mutated only from the AI-loop thread via
+        # announce_detections(), so no extra lock is needed.
+        self._announce_state: dict = {}
+
         # Tracks priority of whatever is playing right now
         self._current_priority = LOW
         # Text currently being played (exposed to status endpoint)
@@ -318,6 +324,64 @@ class AudioManager:
             cooldown=0,
             wav_name=f"obj_{label}_{poskey}.wav",
         )
+
+    # ─── Event-driven nav announce (AnnouncePolicy — Decision 1A/E1A) ─────────
+
+    @staticmethod
+    def nav_wav_candidates(label: str, poskey: str, tier: str) -> list:
+        """Ordered pre-rendered WAV candidates for a nav alert, best → fallback.
+
+        Always offline-resolvable: tier-specific phrase, then the plain phrase
+        (which also serves the far tier), then the generic per-direction phrase,
+        so a missing file never means silence (Decision 4A). A final earcon
+        fallback is handled by the caller.
+        """
+        return [
+            f"obj_{label}_{poskey}_{tier}.wav",   # tier-specific (near = "...dekat")
+            f"obj_{label}_{poskey}.wav",          # plain phrase (also serves far)
+            f"objek_{poskey}.wav",                # generic "ada objek di <arah>"
+        ]
+
+    def announce_detections(self, detections: list, force: bool = False):
+        """Run the single nav-speech gate over this frame's detections.
+
+        Replaces the old "top-2 every tick + back-off" loop. The pure policy
+        (utils/announce_policy) decides what changed, what's an approaching
+        hazard to re-announce, or — with force=True — reads out the whole scene
+        on demand. State lives here and is replaced each call, so a disappeared
+        object prunes itself (no stale danger timer)."""
+        try:
+            from config import cfg as _cfg
+        except Exception:
+            _cfg = None
+        now = time.monotonic()
+        announcements, self._announce_state = _announce_decide(
+            self._announce_state, detections or [], now, cfg=_cfg, force=force,
+        )
+        for a in announcements:
+            self._queue_nav(a["label"], a["position"], a["tier"], a["is_danger"])
+
+    def _queue_nav(self, label: str, position: str, tier: str, is_danger: bool):
+        """Queue one nav alert from a pre-rendered WAV, with offline fallbacks.
+
+        near/danger → CRITICAL (barges in); otherwise HIGH. The policy owns
+        spacing, so cooldown=0 here."""
+        poskey   = _POS_KEY.get(position, position)
+        objid    = _LABEL_ID.get(label, label)
+        phrase   = _POS_PHRASE.get(poskey, position)
+        suffix   = " dekat" if tier == "near" else ""
+        caption  = f"{objid} {phrase}{suffix}".strip()
+        priority = CRITICAL if is_danger else HIGH
+
+        for wav_name in self.nav_wav_candidates(label, poskey, tier):
+            if os.path.exists(os.path.join(self._audio_dir, wav_name)):
+                self.queue(text=caption, priority=priority,
+                           label=f"nav_{label}_{poskey}", cooldown=0,
+                           wav_name=wav_name)
+                return
+        # Nothing pre-rendered matched: last-resort earcon (never silence).
+        self.queue_cue("chime_obstacle.wav", priority=priority,
+                       label=f"nav_{label}_{poskey}")
 
     def _detection_allowed(self, key: str) -> bool:
         """Repeat back-off decision for a detection alert (anti-spam)."""
