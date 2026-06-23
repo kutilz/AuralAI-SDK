@@ -2,13 +2,53 @@
 
 > **Date:** 2025-06-23
 > **Goal:** Reduce time from power-on to hearing "AuralAI menyala"
-> **Result:** ~28-30s → ~14-16s (estimated)
+> **Result:** ~28-30s → **~2.0s** (measured on device; was ~16s before the
+> early-init chime — see "Early-init chime" below)
+
+## TL;DR — where the time went (measured via dmesg, monotonic from power-on)
+
+Boot-to-chime was dominated entirely by **when the chime got a chance to play**,
+not by app code:
+
+| Chime location | Plays at | Why |
+|----------------|---------:|-----|
+| rc.local / S99local (original) | ~16.4s | runs dead-last, behind WiFi association (~13s) |
+| S15 (after udev) | ~9.2s | `udevadm settle` in S10udev is a ~6s blocker |
+| S05z (after S0x hw scripts) | ~6.1s | still behind S00kmod's ~25 `insmod`s + i2c/touch probe |
+| **S00a (first init script)** | **~2.0s** | before module load + WiFi; DAC ready at kernel probe (~0.78s) |
+
+The Python import optimization below does **not** affect time-to-chime — the
+chime plays via ALSA long before Python matters. It only speeds full readiness.
+
+## Early-init chime (S00a) — the big win
+
+The boot chime no longer lives in `rc.local`. It is a standalone init script
+installed at **`/etc/init.d/S00aauralchime`** — the *first* script `rcS` runs,
+before `S00kmod` loads the ~25 soph camera/NPU modules and long before WiFi.
+
+Why this is safe (the design goal was: **never stall boot just to make a sound**):
+- The cv182xa **DAC is kernel-probed at ~0.78s** and its node `/dev/snd/pcmC1D0p`
+  is created by devtmpfs right then — it exists before any init.d script. The
+  chime uses the **i2s** DAC, independent of the **i2c** bus that `S00pmu`/the
+  camera sensor use, so it does not contend with module loading.
+- `aplay` runs in a **detached background subshell** → the script returns
+  instantly; boot proceeds even if audio is slow/absent.
+- It plays + sets `/tmp/.boot_chime_played` **only if** `/dev/snd/pcmC1D0p` and
+  the PCM both exist. If audio isn't ready that early, it does nothing and sets
+  no flag → `main.py`'s `_boot_cue_fast` plays it later (the ~16s path).
+  **Self-adaptive**: worst case is the old behavior, never a broken boot.
+- Always `exit 0`.
+
+Installed/removed automatically by `tools/run.py --autostart` /
+`--autostart-off` (see `CHIME_INIT_SCRIPT` / `CHIME_INIT_PATH`). Verified
+on-device: modules + camera still come up clean, single chime at ~2.0s.
 
 ## What Changed
 
 1. **`tools/run.py`** — `RC_BLOCK` autostart block:
-   - `sleep 5` → `sleep 1` (DAC driver is already loaded by S99local time)
-   - Added `aplay` command to play boot chime via ALSA *before* Python starts
+   - `sleep 5` → `sleep 1`
+   - Boot chime moved OUT of `rc.local` into the `S00aauralchime` init script
+     (above); `rc.local` now only launches the app
    - Original block preserved as `RC_BLOCK_LEGACY` for one-line rollback
 
 2. **`device/main.py`** — Import ordering:

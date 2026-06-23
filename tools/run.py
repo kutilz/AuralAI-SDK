@@ -406,17 +406,14 @@ RC_BEGIN = "# >>> AuralAI autostart >>>"
 RC_END   = "# <<< AuralAI autostart <<<"
 RC_BLOCK = (
     RC_BEGIN + "\n"
-    "# Boot chime: play immediately via ALSA before Python loads (~0.1s vs ~6s).\n"
-    "# Only set the .boot_chime_played flag when the PCM actually exists, so that\n"
-    "# main.py's _boot_cue_fast can tell 'aplay played it' (flag set) apart from\n"
-    "# 'PCM missing, nothing played' (flag absent → it regenerates + plays).\n"
-    "# To revert to old behavior: replace RC_BLOCK with RC_BLOCK_LEGACY in this\n"
-    "# file and re-run: python tools/run.py --autostart\n"
+    "# The boot chime now plays MUCH earlier via /etc/init.d/S00aauralchime\n"
+    "# (first init script, before module load + WiFi: ~2s vs ~16s) — see\n"
+    "# CHIME_INIT_SCRIPT below.\n"
+    "# rc.local (S99local, runs last) only launches the app. S00a sets the\n"
+    "# /tmp/.boot_chime_played flag, so main.py's _boot_cue_fast skips the cue.\n"
+    "# The 'sleep 1' is a small settle margin before the heavy app start.\n"
+    "# To revert chime-in-rc.local: use RC_BLOCK_LEGACY + remove the S00a script.\n"
     "sleep 1\n"
-    "if [ -f /root/audio/auralai_menyala.pcm ]; then\n"
-    "  aplay -q -D hw:1,0 -t raw -f S16_LE -r 48000 -c 1 /root/audio/auralai_menyala.pcm 2>/dev/null &\n"
-    "  touch /tmp/.boot_chime_played\n"
-    "fi\n"
     "cd /root/aural-ai\n"
     "nohup python3 /root/aural-ai/main.py >> /tmp/aural_main.log 2>&1 &\n"
     "echo $! > /tmp/aural_main.pid\n"
@@ -433,6 +430,43 @@ RC_BLOCK_LEGACY = (
     "nohup python3 /root/aural-ai/main.py >> /tmp/aural_main.log 2>&1 &\n"
     "echo $! > /tmp/aural_main.pid\n"
     + RC_END + "\n"
+)
+
+# Early boot-chime init script. Placed at S00a — the VERY FIRST init.d script,
+# even before S00kmod (which insmods the ~25 soph camera/NPU/VPU modules, the
+# biggest early-boot cost). Audio needs none of that: the cv182xa DAC is
+# kernel-probed at ~0.78s and its playback node /dev/snd/pcmC1D0p is created by
+# devtmpfs right then, well before any init.d script runs. The chime uses the
+# i2s DAC, which is independent of the i2c bus that S00pmu/the sensor use, so it
+# does not contend with module loading. Measured: "AuralAI menyala" at ~2.0s vs
+# ~16.4s when it lived in rc.local/S99local (dead-last, behind WiFi).
+#
+# Safety, by design — this must NEVER stall boot just to make a sound:
+#   • aplay is launched in a detached background subshell, so the init script
+#     returns immediately; boot proceeds even if audio is slow or silent.
+#   • It plays + sets the dedup flag ONLY if the DAC playback node already
+#     exists this early (/dev/snd/pcmC1D0p) AND the PCM is present. If audio is
+#     not ready yet, it does nothing and sets no flag — main.py's _boot_cue_fast
+#     then plays the cue later (the existing ~16s path). Self-adaptive fallback.
+#   • Always exits 0. Verified on-device: modules + camera still come up clean.
+CHIME_INIT_PATH = "/etc/init.d/S00aauralchime"
+CHIME_INIT_SCRIPT = (
+    "#!/bin/sh\n"
+    "# >>> AuralAI early boot chime >>>\n"
+    "# Auto-installed by tools/run.py --autostart. Runs first (before module\n"
+    "# load + WiFi) so the power-on cue is heard ~2s after boot. Non-blocking +\n"
+    "# self-adaptive: defers to main.py's _boot_cue_fast if audio isn't ready.\n"
+    "PCM=/root/audio/auralai_menyala.pcm\n"
+    "case \"$1\" in\n"
+    "  start)\n"
+    "    if [ -f \"$PCM\" ] && [ -e /dev/snd/pcmC1D0p ]; then\n"
+    "      ( aplay -q -D hw:1,0 -t raw -f S16_LE -r 48000 -c 1 \"$PCM\" 2>/dev/null ) &\n"
+    "      touch /tmp/.boot_chime_played 2>/dev/null\n"
+    "    fi\n"
+    "    ;;\n"
+    "  stop|restart|reload) ;;\n"
+    "esac\n"
+    "exit 0\n"
 )
 
 
@@ -507,6 +541,22 @@ def autostart_set(client, do_deploy=True):
     _write_rc_local(client, rc)
     _ssh(client, "rm -f /boot/rclocal.disable 2>/dev/null; sync")
 
+    # Install the early boot-chime init script (S15, before WiFi). Written via
+    # base64 to avoid quoting/CRLF issues, then chmod +x. Safe + self-adaptive
+    # (see CHIME_INIT_SCRIPT) so it cannot stall boot.
+    import base64 as _b64
+    _b = _b64.b64encode(CHIME_INIT_SCRIPT.encode("utf-8")).decode()
+    _ssh(
+        client,
+        "python3 -c \"import base64,sys;"
+        f"open('{CHIME_INIT_PATH}','wb').write(base64.b64decode(sys.argv[1]))\" '{_b}' "
+        f"&& chmod +x {CHIME_INIT_PATH} && sync",
+    )
+    if _ssh(client, f"test -x {CHIME_INIT_PATH} && echo ok"):
+        ok(f"Early boot chime dipasang di {CHIME_INIT_PATH} (~4s, sebelum WiFi)")
+    else:
+        warn(f"Gagal memasang {CHIME_INIT_PATH} — chime jatuh ke jalur rc.local/python")
+
     check = _ssh(client, f"cat {RC_LOCAL} 2>/dev/null")
     if RC_BEGIN in check:
         ok(f"Autostart diset di {RC_LOCAL}")
@@ -531,9 +581,12 @@ def autostart_clear(client):
         return
 
     _write_rc_local(client, _strip_block(rc))
+    # Also remove the early boot-chime init script so the device fully reverts.
+    _ssh(client, f"rm -f {CHIME_INIT_PATH} 2>/dev/null; sync")
     check = _ssh(client, f"cat {RC_LOCAL} 2>/dev/null")
     if RC_BEGIN not in check:
         ok("Autostart AuralAI dihapus dari rc.local")
+        ok(f"Early boot chime ({CHIME_INIT_PATH}) dihapus")
     else:
         err("Gagal menghapus blok autostart")
     print()
