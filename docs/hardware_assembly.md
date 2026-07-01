@@ -2,7 +2,7 @@
 
 Panduan merakit satu unit AuralAI: **MaixCAM + speaker mini + tombol + power**.
 Perangkat ini untuk **pengguna tunanetra**, jadi **layar sudah dilepas** — semua
-interaksi lewat **suara (speaker)** dan **satu tombol**.
+interaksi lewat **suara (speaker)** dan **dua tombol** (AKSI + MODE).
 
 > **Baterai sengaja BELUM dipasang.** MaixCAM tidak bisa membaca kapasitas baterai
 > tanpa modul fuel-gauge tambahan (lihat [§5](#5-baterai-ditunda)). Untuk sekarang,
@@ -16,7 +16,7 @@ interaksi lewat **suara (speaker)** dan **satu tombol**.
 |---|---|
 | Sipeed MaixCAM (varian reguler) | Layar LCD sudah dilepas — tidak apa-apa, perangkat full-audio |
 | Speaker mini 8Ω (≤2W) | Untuk output suara TTS + chime |
-| Tombol push-button (momentary) | 1 tombol: ulang URL / ganti mode / acknowledge |
+| Tombol push-button (momentary) × 2 | **AKSI** (capture/describe/scan) + **MODE** (ganti mode / alamat web) |
 | Kabel USB-C + adaptor 5V (≥1A) | Sumber daya utama (pengganti baterai sementara) |
 | Kabel jumper tipis / solder | Untuk speaker & tombol |
 
@@ -52,33 +52,76 @@ melihat orang/kursi). Kalau terdengar "orang di depan" dsb, speaker OK.
 
 ---
 
-## 4. Tombol (GPIO A26, active-low)
+## 4. Dua tombol (active-low, pull-up internal)
 
-Satu tombol mengontrol semuanya. Berdasarkan pengujian board ini, pad **A26**
-idle **HIGH** secara stabil, jadi kita pakai pola **active-low** (tekan = ke GND).
-**Tidak perlu resistor eksternal.**
+Perangkat pakai **2 tombol**: **AKSI** (capture sesuai permintaan) dan **MODE**
+(ganti mode / alamat web). Driver GPIO mengaktifkan **pull-up internal**, jadi
+**tombol mana pun cukup disambung active-low ke GND — tanpa resistor eksternal**.
 
-**Wiring:**
+> ⚠️ **Pad yang TIDAK BOLEH dipakai tombol** (terverifikasi di unit nyata, 2026-07-01):
+>
+> - **A14** — itu **LED onboard** MaixCAM; kernel meng-klaimnya sebagai output
+>   (`led-user`), jadi tombol di A14 tidak akan pernah terbaca. (Versi lama
+>   panduan ini menyarankan A14 — salah.)
+> - **P18–P23** — itu bus **SDIO1 milik modul WiFi internal AIC8800**
+>   (`mmc1` = `wifi-sd`). Tombol di sini tidak terbaca, dan tiap ditekan malah
+>   men-short jalur data WiFi ke ground → WiFi bisa drop.
+> - **A26** — pada varian board WiFi, **A26 = WiFi EN**; tombol di A26 bisa
+>   mematikan/menyalakan WiFi tanpa sengaja.
+
+**Pilihan pad (terverifikasi jalan):**
+
+| Fungsi | Pad default | Catatan |
+|---|---|---|
+| **MODE** | **A28** | Sisi kanan (label `GPIOA 28 / UART2 TX`); aman selama UART2/JTAG tidak dipakai |
+| **AKSI** | **A29** | Sisi kanan (label `GPIOA 29 / UART2 RX`); aman selama UART2/JTAG tidak dipakai |
+| Alternatif | A22 / A23 / A24 / A25 | Boleh dipakai bila SPI4/eMMC tidak dipakai |
+
+> ℹ️ **A15** seharusnya juga bisa, tapi pada unit #1 pad ini terukur *stuck LOW*
+> (ketarik ke ground terus walau pull-up aktif) — kemungkinan short di
+> solderan/board. Kalau mau pakai A15, cek dulu dengan multimeter: A15 ↔ GND
+> harus **tidak** kontinyu saat tombol dilepas.
+
+Enak-nya A28 + A29: keduanya bersebelahan di sisi kanan (hanya diselingi pad
+`GPIOB 3/ADC`) dan dekat pad **GND** sisi kanan — kedua tombol bisa berbagi
+ground yang sama.
+
+**Wiring (per tombol):**
 
 ```
-  Tombol kaki 1  ─────────  Pin A26 (MaixCAM)
-  Tombol kaki 2  ─────────  GND     (MaixCAM)
+  Tombol MODE  kaki 1  ─────────  Pin A28 (MaixCAM)
+  Tombol MODE  kaki 2  ─────────  GND
+  Tombol AKSI  kaki 1  ─────────  Pin A29 (MaixCAM)
+  Tombol AKSI  kaki 2  ─────────  GND
 ```
 
-- Saat dilepas: A26 = 1 (idle). Saat ditekan: A26 → GND = 0 (perangkat membaca "press").
-- Pin sudah dikonfigurasi: `"button_pin_mode": "A26"` di `/root/config.json`.
-  Mau ganti pin? Pakai pad lain yang idle-high, lalu set `button_pin_mode` ke nama
-  pad-nya (mis. `"A26"`).
+- Dilepas = pin HIGH (idle, ditahan pull-up internal). Ditekan = pin → GND = LOW
+  (perangkat membaca "press"), lalu terdengar **chime tick** sebagai konfirmasi.
+- Konfigurasi di `/root/config.json`:
+  `"button_pin_mode": "A28"` dan `"button_pin_action": "A29"`.
+  Mau ganti pad? Set nilai config ke nama pad-nya. Kosongkan (`""`) untuk nonaktif.
+  Ganti pad butuh **restart app** — listener tombol hanya dibaca saat startup.
 
-**Fungsi tombol:**
+**Fungsi tombol AKSI:**
 
 | Kondisi | Tekan sebentar | Tekan agak lama (≥1 dtk) |
 |---|---|---|
-| **Saat setup pertama** (URL belum di-acknowledge) | Ulangi pengumuman alamat web | "Sudah paham" → berhenti mengumumkan |
-| **Pemakaian normal** (sudah di-setup) | Ganti mode (Jelajah → Deskripsi → QRIS) | **Ucapkan ulang alamat web** |
+| **Setup pertama** (URL belum di-ack) | — (nonaktif) | — (nonaktif) |
+| **Mode Jelajah / Deskripsi** | Jelaskan apa yang di depan (1 tekan = 1 panggilan API) | Ucapkan ulang hasil terakhir |
+| **Mode QRIS** | Pindai kode pembayaran | Ucapkan ulang hasil terakhir |
+
+> Hemat token: gambar **hanya dikirim saat tombol AKSI ditekan** — tidak pernah
+> streaming terus-menerus.
+
+**Fungsi tombol MODE:**
+
+| Kondisi | Tekan sebentar | Tekan agak lama (≥1 dtk) |
+|---|---|---|
+| **Setup pertama** (URL belum di-ack) | Ulangi pengumuman alamat web | "Sudah paham" → berhenti mengumumkan |
+| **Pemakaian normal** | Ganti mode (Jelajah → Deskripsi → QRIS) | **Ucapkan ulang alamat web** |
 
 > Jadi pengguna/pendamping selalu bisa dengar alamat webnya lagi kapan saja:
-> tekan tombol **agak lama**.
+> tekan tombol **MODE agak lama**.
 
 ---
 

@@ -116,15 +116,17 @@ _DEFAULTS: dict = {
     "watchdog_timeout_s":       5.0,
     # ── Hardware buttons (active-low to GND; internal pull-up, no resistor) ───
     # The GPIO listener enables PULL_UP, so any free standard GPIO works — wire
-    # each button: leg1 → pad, leg2 → GND. DO NOT use A26: it is WiFi EN on the
-    # WiFi board variant and a button there can toggle WiFi by accident.
-    # MODE button pad ("A14" recommended; "" or -1 = disabled). Short press
+    # each button: leg1 → pad, leg2 → GND. Pads that can NEVER work:
+    #   A14 — onboard user LED, claimed as output by the kernel led driver;
+    #   P18–P23 — SDIO1 bus of the internal AIC8800 WiFi module (mmc1/wifi-sd);
+    #   A26 — WiFi EN on the WiFi board variant (button there toggles WiFi).
+    # MODE button pad ("A28" recommended; "" or -1 = disabled). Short press
     # cycles mode / repeats URL during onboarding; long press = web address / ack.
-    "button_pin_mode":          "A14",
-    # ACTION button pad ("A15" recommended; "" or -1 = disabled). Short press
+    "button_pin_mode":          "A28",
+    # ACTION button pad ("A29" recommended; "" or -1 = disabled). Short press
     # captures on demand (describe / QRIS scan); long press repeats last result.
-    # Safe alternates if A15 is taken: A22–A25 (only when SPI4 is unused).
-    "button_pin_action":        "A15",
+    # Safe alternates: A22–A25 (only when SPI4/eMMC is unused).
+    "button_pin_action":        "A29",
     # Speaker volume (0-100); read by AudioManager on every play
     "audio_volume":             80,
     # Auth: device token (auto-generated on first boot if empty)
