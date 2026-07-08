@@ -525,8 +525,10 @@ class AuralAIHandler(BaseHTTPRequestHandler):
         if self._app_file_exists("companion.html"):
             self._serve_app_page("companion.html")
             return
-        # Build artefacts not yet present → legacy dashboard.
-        self._serve_file("index.html", "text/html")
+        # Build artefacts not yet present → button simulator (Indonesian,
+        # caregiver-safe) instead of the English developer dashboard. The dev
+        # dashboard stays reachable at /admin/legacy.
+        self._serve_file("buttons.html", "text/html")
 
     def _serve_app_page(self, filename: str, fallback_legacy: bool = False):
         """Serve a built HTML entry from static/app/. Optional legacy fallback."""

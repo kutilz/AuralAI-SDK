@@ -95,6 +95,21 @@
 
   .flash { animation: fl .4s ease; }
   @keyframes fl { 0%{ box-shadow:0 0 0 0 var(--accent-soft); } 100%{ box-shadow:0 0 0 12px rgba(0,0,0,0); } }
+
+  /* technical settings live behind one collapsed group so a non-technical
+     helper only sees the everyday controls */
+  details.tech { margin-bottom: var(--s-4); }
+  details.tech > summary {
+    list-style: none; cursor: pointer;
+    display: flex; align-items: center; justify-content: space-between; gap: var(--s-2);
+    min-height: var(--hit); padding: 0 var(--s-4);
+    border: 2px solid var(--border-strong); border-radius: var(--r-md);
+    background: var(--surface); font-weight: 700; color: var(--ink);
+  }
+  details.tech > summary::-webkit-details-marker { display: none; }
+  details.tech > summary::after { content: "▸"; color: var(--ink-3); }
+  details.tech[open] > summary { margin-bottom: var(--s-4); }
+  details.tech[open] > summary::after { content: "▾"; }
 </style>
 </head>
 <body>
@@ -105,6 +120,7 @@
   <div class="brand">
     <h1>Simulasi Tombol</h1>
     <p class="sub" id="devName">AuralAI · menghubungkan…</p>
+    <p class="sub" style="margin-top:4px"><a href="/" style="color:var(--accent);font-weight:600">← Kembali ke Beranda</a></p>
     <div class="a11y" role="group" aria-label="Aksesibilitas tampilan">
       <button class="btn" id="btnContrast" aria-pressed="false" onclick="toggleContrast()">Kontras tinggi</button>
       <button class="btn" id="btnLarge" aria-pressed="false" onclick="toggleLargeType()">Teks besar</button>
@@ -174,6 +190,10 @@
   <p class="hint"><span class="role">Sedang</span>: satu kalimat singkat — lebih cepat &amp; makin sering instan saat cache kata terisi. <span class="role">Detail</span>: deskripsi panjang lengkap.</p>
 </section>
 
+<!-- TECHNICAL GROUP — collapsed by default; everyday controls stay above -->
+<details class="tech" id="techDetails">
+<summary>Setelan teknis — mode suara, latensi &amp; kontrol QA</summary>
+
 <!-- AUDIO RENDER MODE (caching vs single block) -->
 <section class="card" aria-labelledby="h-audio">
   <h2 id="h-audio">Mode suara deskripsi</h2>
@@ -236,6 +256,8 @@
   </div>
   <p class="hint">Langsung lompat ke mode tertentu untuk uji satu-satu. Butuh token (otomatis di-LAN).</p>
 </section>
+
+</details>
 
 <!-- PREVIEW -->
 <section class="card" aria-labelledby="h-prev">

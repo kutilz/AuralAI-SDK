@@ -25,7 +25,16 @@
     "companion": "Home",
     "admin": "Advanced mode",
     "guide": "User guide",
-    "setup": "Initial setup"
+    "setup": "Initial setup",
+    "buttons": "Remote buttons"
+  },
+  "collect": {
+    "banner_title": "Data Collection mode is ON",
+    "recording": "recording",
+    "standby": "standby",
+    "photos": "photos",
+    "banner_body": "All assistive features (object detection, descriptions, QRIS) are disabled — the device only collects photos, even across restarts.",
+    "banner_action": "Open Data Collection page"
   },
   "modes": {
     "explorer": "Explorer",
@@ -115,6 +124,8 @@
     "view_companion": "Caregiver",
     "view_admin": "Admin",
     "view_setup": "Setup",
+    "view_buttons": "Button simulator",
+    "view_collect": "Data collection",
     "view_logs": "Logs",
     "view_benchmark": "Benchmark",
     "view_ai": "AI Settings",
