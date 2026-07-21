@@ -83,6 +83,11 @@ class Orchestrator:
         # and the device is idling in collection mode (camera free for capture).
         self._collection_ready = threading.Event()
 
+        # ── Set by run_ai_loop when its loop exits, so stop() can wait for the
+        # AI thread to finish an in-flight frame read before releasing the
+        # camera (a blind sleep can race a slow _cam.read() → shutdown segfault).
+        self._ai_loop_stopped = threading.Event()
+
         # ── Hardware buttons (MODE + ACTION) ─────────────────────────────────────
         mode_pin = self._button_pin()
         if mode_pin:
@@ -237,12 +242,17 @@ class Orchestrator:
                 "latency":      dict(self._latency),
                 "audio_text":   audio_text,
                 "audio_mode":   cfg.get("audio_mode", "both"),
+                # White-label brand ("auralai" | "isora") — drives the /buttons
+                # UI name + which greeting audio set is active. Flipped via the
+                # hidden long-press on the logo (POST /brand).
+                "brand":        cfg.get("brand", "auralai"),
                 "scene_verbosity": cfg.get("scene_verbosity", "detail"),
                 # Per-word audio cache: "caching per-kata" (True) vs "satu blok
                 # audio" (False), the inter-word gap (ms; <0 = overlap), the
                 # number of warmed words, and recent describe latency.
                 "word_cache_enabled": bool(cfg.get("word_cache_enabled", True)),
                 "word_cache_gap_ms":  int(cfg.get("word_cache_gap_ms", -10)),
+                "word_cache_max_words": int(cfg.get("word_cache_max_words", 12)),
                 "cached_words_total": cached_words_total,
                 "scene_metrics":      scene_metrics,
                 "last_caption": last_caption,
@@ -476,7 +486,7 @@ class Orchestrator:
                     pass
                 btn  = gpio.GPIO(func, gpio.Mode.IN, gpio.Pull.PULL_UP)
                 last = btn.value()
-                press_start = 0.0
+                press_start = None
                 self.logger.info(
                     f"Button listener active on {pin} (active-low)",
                     module="Orchestrator",
@@ -486,9 +496,16 @@ class Orchestrator:
                     if last == 1 and v == 0:        # falling edge = pressed
                         press_start = time.monotonic()
                     elif last == 0 and v == 1:      # rising edge = released
-                        dur = time.monotonic() - press_start
-                        long_press = dur >= cfg.get("button_longpress_s", 1.0)
-                        handler(long_press)
+                        # Only fire if we actually observed the press. If the
+                        # button was already held when the listener started
+                        # (press_start is None), ignore this first release —
+                        # otherwise dur is measured from a bogus start and fires
+                        # a phantom long-press (e.g. dismissing onboarding).
+                        if press_start is not None:
+                            dur = time.monotonic() - press_start
+                            long_press = dur >= cfg.get("button_longpress_s", 1.0)
+                            handler(long_press)
+                        press_start = None
                         time.sleep(0.05)            # debounce settle
                     last = v
                     time.sleep(0.02)
@@ -778,17 +795,34 @@ class Orchestrator:
 
             mode = self.mode
 
-            if mode == "explorer":
-                from modes.explorer_mode import run_explorer_tick
-                run_explorer_tick(self)
-            elif mode == "context":
-                from modes.context_mode import run_context_tick
-                run_context_tick(self)
-            elif mode == "qris":
-                # QRIS only activates on-demand via command; idle here
-                self._mode_event.wait(timeout=0.1)
-            else:
-                self._mode_event.wait(timeout=0.1)
+            # A tick must NEVER kill the AI thread. capture_and_infer has calls
+            # that can raise types the engine's own handler doesn't catch (NPU
+            # errors under memory pressure, MemoryError on this no-swap board).
+            # If that exception escaped, heartbeats would stop and the watchdog
+            # would reload-hammer the camera (→ VI buffer exhaustion → SIGSEGV),
+            # leaving a blind user with a silent, then crashing, device. Log it,
+            # pause briefly to avoid a tight error-spin, and keep looping.
+            try:
+                if mode == "explorer":
+                    from modes.explorer_mode import run_explorer_tick
+                    run_explorer_tick(self)
+                elif mode == "context":
+                    from modes.context_mode import run_context_tick
+                    run_context_tick(self)
+                elif mode == "qris":
+                    # QRIS only activates on-demand via command; idle here
+                    self._mode_event.wait(timeout=0.1)
+                else:
+                    self._mode_event.wait(timeout=0.1)
+            except Exception as e:
+                self.logger.warn(f"AI tick error ({mode}): {e}",
+                                 module="Orchestrator")
+                self._mode_event.wait(timeout=0.5)
+
+        # Loop exited (self._running went False): tell stop() the AI thread is
+        # no longer touching the camera, so it can release() without racing an
+        # in-flight frame read.
+        self._ai_loop_stopped.set()
 
     def _handle_command(self, cmd_obj: dict):
         cmd  = cmd_obj.get("cmd")
@@ -829,10 +863,20 @@ class Orchestrator:
         self._mode_event.set()   # unblock any waiting loop
         if self.audio_manager:
             self.audio_manager.stop()
+        # Stop dataset capture if we're in Mode Ambil Data — otherwise its camera
+        # (VI channel) and CSV file leak on shutdown and the next start SIGSEGVs
+        # in the C camera layer. stop() is a no-op if capture isn't running.
+        if self.data_collector is not None:
+            try:
+                self.data_collector.stop()
+            except Exception:
+                pass
         # Release the camera explicitly. Without this, a SIGTERM/kill leaves the
         # cvitek VI channel allocated ("No buffer space available"), and the next
-        # start SIGSEGVs in the C camera layer before Python can catch it.
-        time.sleep(0.2)          # let the AI loop exit its current frame read
+        # start SIGSEGVs in the C camera layer before Python can catch it. Wait
+        # for the AI loop to finish its in-flight frame read first — a blind
+        # sleep can race a slow _cam.read() still running on the AI thread.
+        self._ai_loop_stopped.wait(timeout=2.0)
         if self.ai_engine:
             try:
                 self.ai_engine.release()

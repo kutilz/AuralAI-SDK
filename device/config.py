@@ -78,7 +78,12 @@ _DEFAULTS: dict = {
     "ai_slow_warn_s":           9,
     # OpenAI
     "openai_api_key":           "",
-    "openai_model":             "gpt-4o-mini",
+    "openai_model":             "gpt-5.6-terra",
+    # Reasoning-capable models think by default (adds latency the same way
+    # Gemini's thinkingConfig does — see gemini_adapter.py); keep this low
+    # for a scene description that needs no reasoning. One of: none, minimal,
+    # low, medium, high, xhigh (not all models support every value).
+    "openai_reasoning_effort":  "low",
     "openai_timeout_s":         10,   # kept for backward-compat; ai_timeout_s is used
     # Gemini
     "gemini_api_key":           "",
@@ -159,7 +164,13 @@ _DEFAULTS: dict = {
     # head/tail silence, which makes a naive concat sound choppy):
     #   trim each word's silence, then a NEGATIVE gap overlaps adjacent words to
     #   tighten them. All live-tunable via /config to taste.
-    "word_cache_gap_ms":        -10,   # <0 = overlap (smoother), >0 = inserted silence
+    "word_cache_gap_ms":        -10,   # <0 = overlap+crossfade (smoother), >0 = inserted silence
+    # Cap (in words) on sentence length eligible for concat mode. Long
+    # free-form text (e.g. "detail" scene descriptions) loses sentence-level
+    # prosody when spliced word-by-word, so past this length we speak one
+    # fluent gTTS sentence instead. 0 disables the cap. 12 comfortably covers
+    # short/"sedang"-style phrases while routing longer ones to synth.
+    "word_cache_max_words":     12,
     "word_cache_trim_enabled":  True,
     "word_cache_trim_threshold": 600,  # |amplitude| below this counts as silence
     "word_cache_trim_margin_ms": 8,    # keep this much real audio around the signal
@@ -172,6 +183,16 @@ _DEFAULTS: dict = {
     # "speech" → only TTS, skip chimes
     # "both"   → chime then TTS (legacy behavior)
     "audio_mode":               "both",
+    # ── Brand identity (white-label toggle: "auralai" | "isora") ──────────────
+    # Same software, different branding. Controls the spoken boot/ready greeting
+    # (which audio set plays) and the name shown in the /buttons web UI. Flipped
+    # live from the hidden long-press on the /buttons logo (POST /brand). The
+    # greeting sets live in /root/audio/brand/<brand>/{menyala,siap_digunakan}.
+    # {wav,pcm} and are copied over the canonical auralai_menyala.* /
+    # auralai_siap_digunakan.* names (which main.py + AudioManager resolve) on a
+    # switch. Upstream SDK default is "auralai"; a field unit can be pinned to a
+    # brand in its /root/config.json (e.g. the I-Sora demo unit → "isora").
+    "brand":                    "auralai",
     # Companion redesign (handoff §1) — admin role token. If empty, every
     # holder of device_token can reach /admin. If set, only admin_role_token
     # holders can. Companion (`/`) always works with device_token.
@@ -253,7 +274,15 @@ class Config:
         except FileNotFoundError:
             self._write_defaults()
         except Exception:
-            pass
+            # Corrupt/unreadable config: preserve it as .corrupt for recovery
+            # instead of letting the next save() silently overwrite it (which
+            # would permanently lose device_token, pairing, and encrypted keys).
+            try:
+                if _CONFIG_PATH.exists():
+                    os.replace(_CONFIG_PATH, str(_CONFIG_PATH) + ".corrupt")
+            except Exception:
+                pass
+            self._write_defaults()
 
     def _write_defaults(self):
         try:
@@ -264,12 +293,22 @@ class Config:
             pass
 
     def save(self):
-        """Persist current config to disk."""
+        """Persist current config to disk atomically (tmp file + os.replace).
+
+        A plain truncate-then-write leaves a half-written file if power is cut
+        mid-save; _load() then falls back to defaults and the next save makes
+        the loss permanent. Writing to a temp file and atomically replacing
+        guarantees the on-disk config is always a complete, valid document.
+        """
         with self._lock:
             data = dict(self._data)
         try:
-            with open(_CONFIG_PATH, "w") as f:
+            tmp = str(_CONFIG_PATH) + ".tmp"
+            with open(tmp, "w") as f:
                 json.dump(data, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, _CONFIG_PATH)
         except Exception:
             pass
 
@@ -491,6 +530,12 @@ class Config:
         """Audio playback preference: "chime" | "speech" | "both". Defaults to "both"."""
         m = self.get("audio_mode", "both")
         return m if m in ("chime", "speech", "both") else "both"
+
+    @property
+    def BRAND(self) -> str:
+        """White-label brand: "auralai" | "isora". Anything else → "auralai"."""
+        b = self.get("brand", "auralai")
+        return b if b in ("auralai", "isora") else "auralai"
 
     @property
     def ADMIN_ROLE_TOKEN(self) -> str:

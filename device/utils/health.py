@@ -55,7 +55,7 @@ def battery_info() -> dict:
     Real implementation requires a HAT-specific driver; this stub
     returns a placeholder so callers can check `if battery_info()`.
     """
-    if not _BATTERY_HAT_PRESENT:
+    if not battery_hat_present():
         return {}
     # TODO: implement HAT-specific register reads (INA219, MAX17043, etc.)
     return {"present": True}

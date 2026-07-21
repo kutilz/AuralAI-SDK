@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Simulasi Tombol — AuralAI</title>
+<title>Kontrol AuralAI</title>
 <link rel="stylesheet" href="/tokens.css">
 <style>
   /* Page layout on top of the shared, WCAG-AA design tokens (tokens.css).
@@ -13,7 +13,10 @@
   .wrap { max-width: 760px; margin: 0 auto; padding: var(--s-4) var(--s-4) var(--s-12); }
 
   header.top { display:flex; justify-content:space-between; align-items:flex-start; gap:var(--s-3); margin-bottom:var(--s-4); flex-wrap:wrap; }
-  .brand h1 { font-size:var(--t-xl); margin:0; line-height:1.1; }
+  .brand h1 { font-size:var(--t-xl); margin:0; line-height:1.1; -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
+  /* hidden brand toggle: the logo is a long-press target (ISORA ⇄ AuralAI).
+     No visible affordance — a subtle tint only appears while it's being held. */
+  .brand h1.holding { color:var(--accent); transition:color .25s ease; }
   .brand .sub { color:var(--ink-2); font-size:var(--t-sm); margin:6px 0 0; }
   .conn { display:flex; align-items:center; gap:var(--s-2); font-size:var(--t-sm); color:var(--ink-2); white-space:nowrap; font-weight:600; }
 
@@ -118,9 +121,8 @@
 
 <header class="top">
   <div class="brand">
-    <h1>Simulasi Tombol</h1>
-    <p class="sub" id="devName">AuralAI · menghubungkan…</p>
-    <p class="sub" style="margin-top:4px"><a href="/" style="color:var(--accent);font-weight:600">← Kembali ke Beranda</a></p>
+    <h1 id="brandTitle">Kontrol perangkat</h1>
+    <p class="sub" id="devName">menghubungkan…</p>
     <div class="a11y" role="group" aria-label="Aksesibilitas tampilan">
       <button class="btn" id="btnContrast" aria-pressed="false" onclick="toggleContrast()">Kontras tinggi</button>
       <button class="btn" id="btnLarge" aria-pressed="false" onclick="toggleLargeType()">Teks besar</button>
@@ -146,6 +148,23 @@
     <span class="lbl">Suara terakhir (yang didengar pengguna)</span>
     <span class="val" id="stCaption" aria-live="polite">—</span>
   </div>
+</section>
+
+<!-- VOLUME -->
+<section class="card" aria-labelledby="h-vol">
+  <h2 id="h-vol">Volume suara</h2>
+  <div class="btngrid" style="grid-template-columns:1fr auto 1fr; align-items:center;">
+    <button class="btn bigbtn" id="volDown" onclick="nudgeVol(-10)" aria-label="Perkecil volume">
+      <span class="lbl" aria-hidden="true">−</span>
+    </button>
+    <div class="chip" style="text-align:center; min-width:96px; flex:0 0 auto;">
+      <b>Volume</b><span class="v" id="volVal" role="status" aria-live="polite">—</span>
+    </div>
+    <button class="btn bigbtn" id="volUp" onclick="nudgeVol(10)" aria-label="Perbesar volume">
+      <span class="lbl" aria-hidden="true">+</span>
+    </button>
+  </div>
+  <p class="hint">Atur kenyaringan suara perangkat (0–100). Berlaku langsung.</p>
 </section>
 
 <!-- MODE BUTTON -->
@@ -275,7 +294,11 @@
   <div id="log" role="log" aria-live="polite" aria-label="Catatan aktivitas"></div>
 </section>
 
-<p class="foot" id="foot">AuralAI · /buttons</p>
+<nav class="foot" id="foot" aria-label="Tampilan lain">
+  Untuk pendamping: <a href="/companion">Tampilan pendamping</a>
+  · <a href="/collect">Ambil data</a>
+  · <a href="/admin">Teknis</a>
+</nav>
 </main>
 </div>
 
@@ -285,11 +308,28 @@ const $ = id => document.getElementById(id);
 let TOKEN = localStorage.getItem('aural_token') || '';
 let connected = false, prevOn = false, prevTimer = null, lastCaption = '';
 let gapEditingUntil = 0;   // suppress poll overwrites while the user drags
+let BRAND = 'auralai';     // white-label brand, synced from /status.brand
 
 // ── timeout-guarded fetch helpers (never hang) ───────────────────────────────
+// This is the blind user's PRIMARY control, so it must work on older phones.
+// AbortSignal.timeout() is unavailable on Chrome <103 / Safari <15.4 — calling
+// it there throws synchronously and breaks every request (poll, /button,
+// /config), leaving the page permanently "terputus". Fall back to a manual
+// AbortController, and if even that is missing, fetch without a timeout rather
+// than throw.
 function tfetch(url, opts, ms){
   opts = opts || {};
-  opts.signal = AbortSignal.timeout(ms || 4000);
+  ms = ms || 4000;
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'){
+    opts.signal = AbortSignal.timeout(ms);
+    return fetch(url, opts);
+  }
+  if (typeof AbortController === 'function'){
+    const ac = new AbortController();
+    opts.signal = ac.signal;
+    const t = setTimeout(() => ac.abort(), ms);
+    return fetch(url, opts).finally(() => clearTimeout(t));
+  }
   return fetch(url, opts);
 }
 async function initToken(){
@@ -364,6 +404,38 @@ async function cmd(c, extra){
   }catch(e){
     logLine('   ✗ gagal (' + (e.name||e) + ')', 'err');
   }
+}
+
+// ── volume control ────────────────────────────────────────────────────────────
+// Reads the current level from GET /config (open, unauthenticated) on load, then
+// writes changes via POST /config. Uses discrete −/+ buttons (large tap targets,
+// screen-reader friendly) instead of a raw slider. 0 is a valid mute.
+let curVol = null;
+function renderVol(){
+  $('volVal').textContent = (curVol == null) ? '—' : curVol + '%';
+  const dis = (curVol == null);
+  $('volDown').disabled = dis || curVol <= 0;
+  $('volUp').disabled   = dis || curVol >= 100;
+}
+async function loadVol(){
+  try{
+    const r = await tfetch('/config', {}, 3000);
+    const c = await r.json();
+    if (typeof c.audio_volume === 'number'){ curVol = c.audio_volume; renderVol(); }
+  }catch(_){}
+}
+async function nudgeVol(delta){
+  if (curVol == null) return;
+  const next = Math.max(0, Math.min(100, curVol + delta));
+  if (next === curVol){ renderVol(); return; }
+  curVol = next; renderVol();
+  logLine('volume: ' + curVol + '%');
+  try{
+    const r = await postConfig({audio_volume: curVol});
+    const d = await r.json().catch(()=>({}));
+    if (d.ok) logLine('   ✓ volume ' + curVol + '% tersimpan', 'ok');
+    else      logLine('   ✗ ' + (d.error || ('HTTP '+r.status)), 'err');
+  }catch(e){ logLine('   ✗ gagal (' + (e.name||e) + ')', 'err'); }
 }
 
 // ── description verbosity ─────────────────────────────────────────────────────
@@ -573,9 +645,9 @@ function applyState(s){
 
   renderMetrics(s);
 
-  if (s.device_name || s.mdns_host){
-    $('devName').textContent = 'AuralAI · ' + (s.device_name || s.mdns_host);
-  }
+  if (s.brand) applyBrand(s.brand);
+  $('devName').textContent = brandDisplay(s.brand || BRAND) + ' · '
+      + (s.device_name || s.mdns_host || 'operasi normal');
 }
 // update the slider readout without extending the editing-suppression window
 function onGapInputDisplayOnly(v){
@@ -613,9 +685,61 @@ function refreshPrev(){
   tmp.src = '/snapshot?t=' + Date.now();
 }
 
+// ── hidden brand toggle: long-press the logo (ISORA ⇄ AuralAI) ───────────────
+// Same software, different branding. A ~1.6s hold on the page title flips the
+// device's spoken greeting + this UI name between the two brands. Deliberately
+// undiscoverable by touch (no label / no aria) so the blind user never triggers
+// it by accident; a sighted operator who knows the gesture uses it at a demo.
+function brandDisplay(b){ return b === 'isora' ? 'ISORA' : 'AuralAI'; }
+function applyBrand(b){
+  if (b !== 'auralai' && b !== 'isora') return;
+  BRAND = b;
+  const name = brandDisplay(b);
+  $('brandTitle').textContent = 'Kontrol ' + name;
+  document.title = 'Kontrol ' + name;
+}
+async function toggleBrand(){
+  const next = (BRAND === 'isora') ? 'auralai' : 'isora';
+  logLine('ganti brand → ' + brandDisplay(next) + '…');
+  try{
+    const h = {'Content-Type':'application/json'};
+    if (TOKEN) h['X-Auth-Token'] = TOKEN;   // /brand is open, but send token if we have one
+    const r = await tfetch('/brand', {method:'POST', headers:h,
+              body: JSON.stringify({brand: next})}, 6000);
+    const d = await r.json().catch(()=>({}));
+    if (d.ok && d.brand){
+      applyBrand(d.brand);
+      logLine('   ✓ brand: ' + brandDisplay(d.brand) + ' (aktif) — dengarkan sapaan', 'ok');
+    } else {
+      logLine('   ✗ ' + (d.error || ('HTTP '+r.status)), 'err');
+    }
+  }catch(e){
+    logLine('   ✗ gagal ganti brand (' + (e.name||e) + ')', 'err');
+  }
+}
+(function bindBrandLongPress(){
+  const el = $('brandTitle');
+  if (!el) return;
+  let timer = null, fired = false;
+  const HOLD_MS = 1600;
+  const begin = () => {
+    fired = false;
+    el.classList.add('holding');
+    timer = setTimeout(() => { fired = true; el.classList.remove('holding'); toggleBrand(); }, HOLD_MS);
+  };
+  const cancel = () => { el.classList.remove('holding'); if (timer){ clearTimeout(timer); timer = null; } };
+  // Pointer events cover touch + mouse on every WebView this ships to (Chrome 55+).
+  el.addEventListener('pointerdown', begin);
+  el.addEventListener('pointerup', cancel);
+  el.addEventListener('pointerleave', cancel);
+  el.addEventListener('pointercancel', cancel);
+  // Suppress the text-selection / context menu the long hold would otherwise raise.
+  el.addEventListener('contextmenu', e => e.preventDefault());
+})();
+
 // ── boot ─────────────────────────────────────────────────────────────────────
-logLine('Halaman simulasi tombol siap. Pakai saat tombol fisik mati.', 'dim');
-initToken().finally(poll);
+logLine('Kontrol perangkat siap.', 'dim');
+initToken().finally(() => { loadVol(); poll(); });
 </script>
 </body>
 </html>

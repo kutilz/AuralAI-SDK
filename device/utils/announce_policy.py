@@ -89,19 +89,20 @@ def decide(state, detections, now, cfg=None, force=False):
         prev   = state.get(label)
         last   = prev["last"] if prev else 0.0
 
-        # Decide whether this object earns a word this frame.
+        # Does this object earn a word this frame?
         if force:
-            speak = True
+            wanted = True
         elif prev is None:
-            speak = True                                   # new object
+            wanted = True                                  # new object
         elif cell != prev["cell"] or tier != prev["tier"]:
-            speak = True                                   # moved cell or tier
+            wanted = True                                  # moved cell or tier
         elif danger and (now - last) >= remind_s:
-            speak = True                                   # hazard re-announce
+            wanted = True                                  # hazard re-announce
         else:
-            speak = False                                  # unchanged & calm
+            wanted = False                                 # unchanged & calm
 
         # Cooldown + per-tick cap (force bypasses both).
+        speak = wanted
         if speak and not force:
             if prev is not None and (now - last) < cooldown_s:
                 speak = False
@@ -115,8 +116,21 @@ def decide(state, detections, now, cfg=None, force=False):
                 "tier": tier, "is_danger": danger,
             })
             spoken += 1
-
-        new_state[label] = {"cell": cell, "tier": tier,
-                            "danger": danger, "last": last}
+            new_state[label] = {"cell": cell, "tier": tier,
+                                "danger": danger, "last": last}
+        elif wanted:
+            # Earned a word but SUPPRESSED (cooldown/cap): do NOT record the new
+            # cell/tier as announced, or the change is lost forever — the object
+            # would read as "unchanged & calm" on every later frame and a
+            # non-danger obstacle that moved into the path would never be spoken.
+            # Keep the prior announced state so the change is re-evaluated next
+            # frame. For a brand-new object with no prior state, leave it
+            # unrecorded so it stays "new" and is retried next frame.
+            if prev is not None:
+                new_state[label] = dict(prev)
+        else:
+            # Unchanged & calm: record current state (last carried from prev).
+            new_state[label] = {"cell": cell, "tier": tier,
+                                "danger": danger, "last": last}
 
     return announcements, new_state

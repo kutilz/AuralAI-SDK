@@ -17,10 +17,7 @@ class GeminiAdapter(AIAdapter):
 
     def _api_key(self) -> str:
         import os
-        return (
-            os.environ.get("GEMINI_API_KEY")
-            or self._cfg.get("gemini_api_key", "")
-        )
+        return os.environ.get("GEMINI_API_KEY") or self._cfg.GEMINI_API_KEY
 
     def _call(self, jpeg_bytes: bytes, prompt: str, max_tokens: int) -> str:
         key   = self._api_key()
@@ -41,9 +38,20 @@ class GeminiAdapter(AIAdapter):
                 }
             })
 
+        gen_cfg = {"maxOutputTokens": max_tokens}
+        # 2.5+ "flash" models think by default even when unasked: a plain
+        # describe call was measured spending 500-700+ hidden thoughtsTokenCount
+        # before writing the 1-2 sentence answer (~10s of a ~16s round-trip, and
+        # could truncate the answer if thinking ran past maxOutputTokens). This
+        # task needs no reasoning, so thinking is disabled — BUT thinkingConfig
+        # is only valid on the 2.5 thinking series. Sending it to 1.5/2.0 models
+        # (including the default gemini-1.5-flash) returns HTTP 400, and 2.5-pro
+        # rejects a 0 budget. Only attach it where it is accepted.
+        if "2.5" in model and "pro" not in model:
+            gen_cfg["thinkingConfig"] = {"thinkingBudget": 0}
         payload = {
             "contents": [{"parts": parts}],
-            "generationConfig": {"maxOutputTokens": max_tokens},
+            "generationConfig": gen_cfg,
         }
 
         req = urllib.request.Request(
@@ -66,16 +74,14 @@ class GeminiAdapter(AIAdapter):
         except Exception as e:
             raise AdapterError(str(e)) from e
 
-    # Token budgets are generous because current Gemini "flash" models spend
-    # part of maxOutputTokens on internal thinking; a tight cap (e.g. 150) gets
-    # consumed by thinking and truncates the visible answer mid-sentence. The
-    # prompt still constrains the answer to 1–2 sentences, so real output stays
-    # short — the high cap only guarantees room for thinking + the full reply.
+    # Thinking is off (see _call), so the cap only needs to cover the actual
+    # 1-2 sentence Indonesian answer the prompt asks for — matches the
+    # OpenAI/Claude adapters' describe_scene budget.
     def describe_scene(self, jpeg_bytes: bytes, prompt: str) -> str:
-        return self._call(jpeg_bytes, prompt, max_tokens=1024)
+        return self._call(jpeg_bytes, prompt, max_tokens=220)
 
     def scan_qris(self, jpeg_bytes: bytes, prompt: str) -> str:
-        return self._call(jpeg_bytes, prompt, max_tokens=512)
+        return self._call(jpeg_bytes, prompt, max_tokens=120)
 
     def test_connection(self) -> dict:
         try:

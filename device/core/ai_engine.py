@@ -453,15 +453,19 @@ class AIEngine:
         try:
             adapter = self._get_adapter()
 
-            # Measure the dominant stage (Gemini round-trip) for the device log.
-            # Audio rendering is delegated to AudioManager.speak_scene, which
-            # plays from the per-word cache (zero network) when the whole
-            # sentence is already cached, else speaks it via gTTS and warms the
-            # missing words in the background.
+            # Measure the dominant stage (AI vision round-trip) for the device
+            # log. Tagged with the active provider so [scene-timing]
+            # dominant=... reflects whichever one actually ran (openai/gemini/
+            # claude), not a stale "gemini" label from when that was the only
+            # option. Audio rendering is delegated to AudioManager.speak_scene,
+            # which plays from the per-word cache (zero network) when the
+            # whole sentence is already cached, else speaks it via gTTS and
+            # warms the missing words in the background.
             timer = StageTimer()
+            provider = cfg.AI_PROVIDER
 
             def _work():
-                with timer.stage("gemini"):
+                with timer.stage(provider):
                     return adapter.describe_scene(self._frame_jpeg(), cfg.PROMPT_SCENE)
 
             description = self._run_with_progress(_work)
@@ -470,10 +474,12 @@ class AIEngine:
             am.queue_cue("chime_success.wav")
             # Open a latency record for the /buttons dashboard; speak_scene fills
             # in how the audio was rendered (per-word cache vs whole synth).
+            # scene_metrics still stores this under its historical "gemini_ms"
+            # key regardless of provider (dashboard/tests key off that name).
             sid = scene_metrics.start_describe(
                 description,
                 cfg.get("scene_verbosity", "detail"),
-                timer.summary().get("gemini_ms", 0),
+                timer.summary().get(f"{provider}_ms", 0),
             )
             am.speak_scene(description, scene_id=sid)
         except AdapterError as e:

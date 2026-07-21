@@ -553,7 +553,8 @@ class AudioManager:
             self._queue_scene_synth(text, scene_id)
             return
 
-        plan = plan_utterance(text, self._word_cache.lookup)
+        plan = plan_utterance(text, self._word_cache.lookup,
+                              max_words=self._word_cache_max_words())
         missing_set = set(plan.missing)
         cached_words = sum(1 for w in toks if w not in missing_set)
 
@@ -631,6 +632,18 @@ class AudioManager:
         except Exception:
             margin_ms = 8
         return int(_PCM_RATE * margin_ms / 1000)
+
+    def _word_cache_max_words(self) -> int:
+        """Cap on sentence length for word-cache concat mode. A long free-form
+        sentence (e.g. "detail" verbosity) spliced from independently
+        synthesized words sounds robotic no matter how smooth each seam is —
+        past this length we go straight to one fluent gTTS render instead
+        (words still warm in the background). 0 disables the cap."""
+        try:
+            from config import cfg as _cfg
+            return int(_cfg.get("word_cache_max_words", 12))
+        except Exception:
+            return 12
 
     def _warm_words_async(self, words: list):
         """Background: synthesize a few missing words in isolation via gTTS and

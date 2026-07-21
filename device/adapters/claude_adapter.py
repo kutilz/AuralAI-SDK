@@ -18,10 +18,7 @@ class ClaudeAdapter(AIAdapter):
 
     def _api_key(self) -> str:
         import os
-        return (
-            os.environ.get("ANTHROPIC_API_KEY")
-            or self._cfg.get("claude_api_key", "")
-        )
+        return os.environ.get("ANTHROPIC_API_KEY") or self._cfg.CLAUDE_API_KEY
 
     def _call(self, jpeg_bytes: bytes, prompt: str, max_tokens: int) -> str:
         key = self._api_key()

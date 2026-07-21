@@ -36,7 +36,7 @@ FW_VERSION = "device-1.0"
 # pushed command is ignored — the web cannot rewrite arbitrary device internals.
 ALLOWED_CONFIG_KEYS = {
     "ai_provider", "ai_timeout_s",
-    "openai_model", "gemini_model", "claude_model",
+    "openai_model", "openai_reasoning_effort", "gemini_model", "claude_model",
     "audio_mode", "audio_volume",
     "device_name", "prompt_scene", "prompt_qris",
     "qris_mode", "tts_enabled", "url_announce_enabled",

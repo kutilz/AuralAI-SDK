@@ -36,29 +36,41 @@ from typing import Optional
 # ─── Device key derivation ────────────────────────────────────────────────────
 
 _SALT       = b"AuralAI-SDK::secure_keys::v1"
-_MACHINE_ID_PATHS = (
-    "/etc/machine-id",
-    "/var/lib/dbus/machine-id",
-    "/proc/sys/kernel/random/boot_id",
-)
+# Self-generated, self-persisted seed rather than the platform machine-id:
+# on this device's image, /etc/machine-id is absent and dbus-uuidgen
+# regenerates /var/lib/dbus/machine-id on every boot instead of reusing an
+# existing one, so anything encrypted under the old machine-id-derived key
+# silently failed to decrypt after the next reboot (confirmed 2026-07-12 —
+# a key that decrypted fine pre-reboot returned "" post-reboot). Generating
+# our own seed once and persisting it ourselves removes that dependency; it
+# lives on the same SD-card partition as config.json either way, so this
+# isn't a security regression versus the old scheme.
+_SEED_FILE = "/root/.aural_secure_seed"
 
 
 def _machine_seed() -> bytes:
-    """Stable seed across boots — falls back to MAC if no machine-id."""
-    for p in _MACHINE_ID_PATHS:
-        try:
-            with open(p, "rb") as f:
-                data = f.read().strip()
-                if data:
-                    return data
-        except Exception:
-            pass
-    # Fallback: hostname + MAC of first interface (less stable but works)
+    """Stable seed across boots — generated once, persisted at _SEED_FILE."""
     try:
-        import uuid
-        return f"{uuid.getnode():012x}".encode()
+        with open(_SEED_FILE, "rb") as f:
+            data = f.read()
+            if len(data) >= 16:
+                return data
     except Exception:
-        return b"unknown-device"
+        pass
+    seed = secrets.token_bytes(32)
+    try:
+        fd = os.open(_SEED_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(seed)
+    except FileExistsError:
+        try:
+            with open(_SEED_FILE, "rb") as f:
+                return f.read()
+        except Exception:
+            return seed
+    except Exception:
+        pass
+    return seed
 
 
 def _device_key() -> bytes:

@@ -1413,9 +1413,14 @@ async function aiSettingsSave(opts = {}) {
   }
 
   const qrisModeSel = document.getElementById('qrisModeSel');
+  // Parse explicitly: `parseInt(x) || 80` turns a legitimate volume of 0 (mute)
+  // into 80, and `|| 0.5` would do the same to a 0 threshold. Treat only
+  // non-finite (empty/NaN) input as "use default".
+  const _conf = parseFloat(document.getElementById('hwConfThreshold').value);
+  const _vol  = parseInt(document.getElementById('hwVolume').value, 10);
   const hwPayload = {
-    conf_threshold: parseFloat(document.getElementById('hwConfThreshold').value) || 0.5,
-    audio_volume:   parseInt(document.getElementById('hwVolume').value)           || 80,
+    conf_threshold: Number.isFinite(_conf) ? _conf : 0.5,
+    audio_volume:   Number.isFinite(_vol)  ? _vol  : 80,
   };
   if (qrisModeSel && qrisModeSel.value) {
     hwPayload.qris_mode = qrisModeSel.value;
@@ -1435,7 +1440,13 @@ async function aiSettingsSave(opts = {}) {
       }),
     ]);
     const dAI = await rAI.json();
-    if (dAI.ok) {
+    // Check BOTH responses: the /config write (rHW) carries conf_threshold,
+    // audio_volume and qris_mode. Reporting success on dAI.ok alone hides a
+    // failed /config save (e.g. the phantom-'orang' conf_threshold fix silently
+    // not reaching the device) and wrongly clears the dirty flag.
+    let dHW = {}; try { dHW = await rHW.json(); } catch(_) {}
+    const hwOk = rHW.ok && dHW.error === undefined;
+    if (dAI.ok && hwOk) {
       state._dirty = false;
       _refreshSaveBtnVisibility();
       if (!silent) {
@@ -1450,7 +1461,10 @@ async function aiSettingsSave(opts = {}) {
         }
       }
     } else {
-      log('err', `Gagal simpan AI settings: ${dAI.error}`);
+      const errs = [];
+      if (!dAI.ok) errs.push(`AI: ${dAI.error || 'gagal'}`);
+      if (!hwOk)   errs.push(`config: ${dHW.error || ('HTTP ' + rHW.status)}`);
+      log('err', `Gagal simpan — ${errs.join(' · ')}`);
     }
   } catch(e) {
     log('err', `Save error: ${e}`);
