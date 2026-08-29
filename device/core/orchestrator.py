@@ -30,16 +30,82 @@ import time
 from typing import Optional
 
 from config import cfg
+from utils.power import PowerGovernor, pace_delay
 
 
 class Orchestrator:
 
-    MODES = ("explorer", "context", "qris")
+    # "idle" is the neutral resting state: camera and NPU released, nothing
+    # announced. It is where the device boots and where the mode cycle returns.
+    MODES = ("idle", "explorer", "context", "qris")
     # Button press cycles through modes in this order
-    _MODE_CYCLE = {"explorer": "context", "context": "qris", "qris": "explorer"}
+    _MODE_CYCLE = {"idle": "explorer", "explorer": "context",
+                   "context": "qris", "qris": "idle"}
 
     # Modes that keep YOLO loaded
     _YOLO_MODES = {"explorer"}
+
+    # Neutral mode the device falls back to whenever the configured one is
+    # unusable. Never explorer: an unasked-for mode that starts speaking is
+    # worse than one that waits for a button press.
+    NEUTRAL_MODE = "idle"
+
+    @staticmethod
+    def collection_transition(want_collection: bool, in_collection: bool):
+        """"enter", "exit", or None — the camera handoff dataset capture needs.
+
+        Takes the ACTUAL capture state, never "is there an AI engine?". That
+        proxy held only while collection mode was the single state without an
+        engine; idle mode has none either, and inferring from it made every
+        tick decide the device had just left capture — re-announcing "Mode
+        normal aktif." forever.
+        """
+        if want_collection and not in_collection:
+            return "enter"
+        if in_collection and not want_collection:
+            return "exit"
+        return None
+
+    @staticmethod
+    def engine_wanted(mode: str, collecting: bool) -> bool:
+        """Whether the AI engine (and with it the camera) should be held.
+
+        Measured on the device: with the camera merely OPEN and never read, the
+        app still burned ~25-30% of the single core and the kernel's
+        [vi_event_handle] stayed busy — the sensor streams into the VI buffers
+        whether or not anyone reads them. So idle really does have to let go of
+        the camera, not just stop reading it.
+
+        Dataset capture outranks every mode: exactly one of AIEngine /
+        DataCollector may hold the camera at a time.
+        """
+        if collecting:
+            return False
+        return mode != "idle"
+
+    @classmethod
+    def next_mode(cls, current) -> str:
+        """The mode a short MODE-button press moves to.
+
+        An unknown current mode lands on the neutral one: the user's way out of
+        any state they did not intend to be in is always one more press.
+        """
+        return cls._MODE_CYCLE.get(current, cls.NEUTRAL_MODE)
+
+    @classmethod
+    def resolve_boot_mode(cls, raw, last_mode=None) -> str:
+        """Mode to stand in at power-on, from cfg["boot_mode"].
+
+        Accepts a mode name, or "last" to resume whatever was running before
+        the device was switched off. Anything unset or unrecognised resolves to
+        the neutral mode rather than guessing.
+        """
+        value = (raw or "").strip().lower() if isinstance(raw, str) else ""
+        if value == "last":
+            value = (last_mode or "").strip().lower() if isinstance(last_mode, str) else ""
+        if value in cls.MODES:
+            return value
+        return cls.NEUTRAL_MODE
 
     def __init__(self, logger):
         self.logger = logger
@@ -47,7 +113,13 @@ class Orchestrator:
         # ── Shared state ──────────────────────────────────────────────────────
         self._lock = threading.Lock()
 
-        self._mode      = "explorer"
+        # Boot mode: neutral by default. A device that wakes up already
+        # narrating — in a bag, on a table, mid-handover — is a device nobody
+        # asked anything of yet. cfg["boot_mode"] can pin a mode, or "last" to
+        # resume the one it was switched off in.
+        self._mode      = self.resolve_boot_mode(
+            cfg.get("boot_mode"), cfg.get("last_mode")
+        )
         self._ai_focus  = False
         self._ai_focus_until = 0.0
 
@@ -75,6 +147,25 @@ class Orchestrator:
         self.onboarding:    object = None   # set by main.py (spoken-URL onboarding)
         self.mdns:          object = None   # set by main.py (mDNS publisher)
         self.data_collector: object = None  # set by main.py (Mode Ambil Data)
+
+        # ── Adaptive power governor ───────────────────────────────────────────
+        # Owns the answer to "how much work is the AI loop allowed to do right
+        # now", from temperature and whether anything is actually happening.
+        self._power = PowerGovernor(
+            full_fps=cfg.get("camera_fps", 30),
+            hot_c=cfg.get("thermal_throttle_temp_c", 80.0),
+            recover_margin_c=cfg.get("power_recover_margin_c", 5.0),
+            idle_after_s=cfg.get("power_idle_after_s", 20.0),
+            idle_fps=cfg.get("power_idle_fps", 8.0),
+        )
+        self._power_plan = self._power.update(now=time.monotonic())
+
+        # Preview bookkeeping: when a client last asked for a frame, and how
+        # long after that we keep encoding them. The dashboard polls twice a
+        # second, so a few seconds of grace spans normal polling without
+        # leaving the encoder running for a closed tab.
+        self._last_preview_req = None
+        self._preview_grace_s  = cfg.get("preview_grace_s", 5.0)
 
         # ── Mode-change event (wakes AI loop when mode switches) ──────────────
         self._mode_event = threading.Event()
@@ -230,6 +321,18 @@ class Orchestrator:
             except Exception:
                 pass
 
+        # Camera orientation: the persisted quarter turn plus the frame size it
+        # actually produces (utils.orientation is pure, no camera needed).
+        try:
+            from utils.orientation import normalize_rotation, rotated_dims
+            _cam_rot = normalize_rotation(cfg.get("camera_rotation", 0))
+            _cam_w, _cam_h = rotated_dims(
+                cfg.get("input_width", 320), cfg.get("input_height", 224), _cam_rot
+            )
+        except Exception:
+            _cam_rot = 0
+            _cam_w, _cam_h = cfg.get("input_width", 320), cfg.get("input_height", 224)
+
         with self._lock:
             return {
                 "mode":         self._mode,
@@ -260,9 +363,25 @@ class Orchestrator:
                 "wifi_signal":  wifi["signal"],
                 "wifi_ssid":    wifi["ssid"],
                 "temperature":  temp_c,
+                # What the device decided to do about its own temperature.
+                # This is where a hot device reports itself — to the dashboard,
+                # where a pendamping can see it, instead of into the ear of the
+                # person walking, who can do nothing with the information.
+                "power": {
+                    "tier":       self._power_plan.tier,
+                    "target_fps": self._power_plan.target_fps,
+                    "preview":    self._power_plan.preview,
+                    "boot_mode":  cfg.get("boot_mode", "idle"),
+                },
                 "setup_completed": cfg.get("setup_completed", False),
-                "cam_w":        cfg.get("input_width",  320),
-                "cam_h":        cfg.get("input_height", 224),
+                # Effective (post-rotation) preview size — a quarter turn
+                # swaps the axes, so a UI that lays out the preview from these
+                # must get the rotated pair, not the raw capture size.
+                "cam_w":        _cam_w,
+                "cam_h":        _cam_h,
+                # Persisted camera orientation (0/90/180/270, clockwise) so the
+                # web UI can show which turn is currently active.
+                "camera_rotation": _cam_rot,
                 # Mode Ambil Data — surfaced to the dashboard + cloud heartbeat
                 # so the mode and capture progress are diagnosable remotely.
                 "data_collection_mode": cfg.get("data_collection_mode", False),
@@ -439,6 +558,13 @@ class Orchestrator:
             if self.ai_engine:
                 self.ai_engine.reload_model()
 
+        # Remember it, so a device configured with boot_mode="last" comes back
+        # where the user left it.
+        try:
+            cfg.set("last_mode", new_mode)
+        except Exception:
+            pass
+
         # Wake up the AI loop so it picks up the new mode immediately
         self._mode_event.set()
 
@@ -614,7 +740,7 @@ class Orchestrator:
             if self.onboarding is not None:
                 self.onboarding.announce(force=True)
         else:
-            self.switch_mode(self._MODE_CYCLE[self.mode])
+            self.switch_mode(self.next_mode(self.mode))
 
     def _on_action_button(self, long_press: bool):
         """
@@ -643,23 +769,84 @@ class Orchestrator:
         # path the Web UI uses, so it runs on the AI loop thread (not GPIO).
         self.set_pending_command("qris" if self.mode == "qris" else "describe")
 
-    # ─── Thermal throttling callbacks ─────────────────────────────────────────
+    # ─── Adaptive power management ────────────────────────────────────────────
 
-    def _on_thermal_throttle(self, temp_c: float):
-        self.logger.warn(
-            f"Thermal throttle engaged at {temp_c:.1f}°C — reducing FPS",
-            module="Orchestrator",
-        )
-        cfg.set("camera_fps", cfg.THERMAL_THROTTLE_FPS)
-        if self.audio_manager:
-            self.audio_manager.queue_system("suhu_tinggi")
+    def on_health_sample(self, snapshot: dict):
+        """Fold one HealthMonitor sample into the current power plan.
 
-    def _on_thermal_recover(self, temp_c: float):
-        self.logger.info(
-            f"Thermal recover at {temp_c:.1f}°C — restoring FPS",
-            module="Orchestrator",
+        Called ~every poll from the monitor thread. Deliberately silent: the
+        device answers heat by doing less, never by asking the person wearing
+        it to intervene. The only outward sign is a log line on a tier change
+        and the tier shown on the dashboard.
+        """
+        temp_c = snapshot.get("cpu_temp_c") if isinstance(snapshot, dict) else None
+        before = self._power_plan.tier
+        plan   = self._power.update(
+            temp_c=temp_c,
+            now=time.monotonic(),
+            busy=self._recently_busy(),
         )
-        cfg.set("camera_fps", cfg.get("camera_fps_normal", 30))
+        with self._lock:
+            self._power_plan = plan
+        if plan.tier != before:
+            shown = f"{temp_c:.1f}°C" if isinstance(temp_c, (int, float)) else "?"
+            self.logger.info(
+                f"Power tier {before} → {plan.tier} at {shown} "
+                f"(fps {plan.target_fps:g}, "
+                f"preview {'on' if plan.preview else 'off'})",
+                module="Orchestrator",
+            )
+
+    def _recently_busy(self) -> bool:
+        """True while something is happening that justifies the full rate.
+
+        A scene with nothing in it, and no user asking for anything, is the
+        cheapest thing the device will ever look at — there is no reason to
+        look at it thirty times a second.
+        """
+        with self._lock:
+            if self._detections:
+                return True
+        return (
+            self.ai_focus
+            or self._pending_command is not None
+            or self.detection_audio_suppressed()   # a user just interacted
+        )
+
+    @property
+    def power_plan(self):
+        """Current work budget (see utils.power.PowerPlan)."""
+        with self._lock:
+            return self._power_plan
+
+    def note_preview_request(self, now: float = None):
+        """Record that a client just fetched /snapshot (or the MJPEG stream)."""
+        with self._lock:
+            self._last_preview_req = time.monotonic() if now is None else now
+
+    def wants_preview(self, now: float = None) -> bool:
+        """True when it is worth spending a tick encoding the dashboard JPEG.
+
+        Two independent vetoes. Nobody watching: the encode is ~17 ms of an
+        ~18 ms tick on this SoC, and the device used to pay it all day for a
+        page no one had open. Too hot: heat outranks a watcher — the preview is
+        the first work shed, because it is the only work that is not navigation.
+        """
+        if not self.power_plan.preview:
+            return False
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            last = self._last_preview_req
+        return last is not None and (now - last) <= self._preview_grace_s
+
+    def tick_delay(self, elapsed_s: float) -> float:
+        """Seconds the AI loop must rest after a tick that took `elapsed_s`.
+
+        Pacing is where a plan turns into heat that is never generated. The
+        loop waits on the mode event rather than sleeping, so a button press
+        still lands instantly even when the budget is two frames a second.
+        """
+        return pace_delay(self.power_plan, elapsed_s)
 
     # ─── Main AI loop ─────────────────────────────────────────────────────────
 
@@ -678,22 +865,30 @@ class Orchestrator:
                 restart_fn=self.ai_engine.reload,
             )
 
+    def _release_aural_engine(self):
+        """Let go of the camera + NPU. AI-LOOP THREAD ONLY.
+
+        Same invariant as the collection-mode handoff: every camera open/close
+        happens on this one thread, and the watchdog is unregistered first so
+        it cannot reload the engine (→ reopen the camera) behind our back.
+        """
+        if self.ai_engine is None:
+            return
+        if self.watchdog:
+            try:
+                self.watchdog.unregister("ai_engine")
+            except Exception:
+                pass
+        try:
+            self.ai_engine.release()
+        except Exception as e:
+            self.logger.warn(f"AIEngine release failed: {e}", module="Orchestrator")
+        self.ai_engine = None
+        self.detections = []
+
     def _enter_collection_mode(self, announce: bool = False):
         """Release the aural camera and auto-start dataset capture."""
-        # Unregister first so the watchdog can't reload AIEngine (→ reopen camera)
-        # while we're in collection mode.
-        if self.ai_engine is not None:
-            if self.watchdog:
-                try:
-                    self.watchdog.unregister("ai_engine")
-                except Exception:
-                    pass
-            try:
-                self.ai_engine.release()
-            except Exception as e:
-                self.logger.warn(f"AIEngine release failed: {e}", module="Orchestrator")
-            self.ai_engine = None
-
+        self._release_aural_engine()
         self._collection_ready.set()
 
         # Auto-start: the helper just powers the device on and walks.
@@ -721,14 +916,33 @@ class Orchestrator:
                 dc.stop()                 # joins capture thread, releases camera
             except Exception as e:
                 self.logger.warn(f"Stop capture failed: {e}", module="Orchestrator")
-        self._start_aural_engine()
+        # Only reopen the camera if the mode we are returning to wants it —
+        # leaving collection while parked in idle should stay camera-free.
+        if self.engine_wanted(self.mode, collecting=False):
+            self._start_aural_engine()
         if self.audio_manager:
             self.audio_manager.queue(
                 "Mode normal aktif.", label="datacol_off", cooldown=0,
                 wav_name="mode_normal_aktif.wav")
 
     def run_ai_loop(self):
-        """Entry point for the AI thread."""
+        """Entry point for the AI thread.
+
+        _ai_loop_stopped is stop()'s handshake — it has to be set on EVERY exit
+        path, not just a clean `while` exit. If anything escapes the body (a
+        MemoryError on this no-swap board, an NPU error out of the pairing-QR
+        scan, a failure constructing AudioManager), stop() would otherwise block
+        its full 2.0s and then release() the camera with no idea whether this
+        thread was still mid-read.
+        """
+        try:
+            self._run_ai_loop_body()
+        except Exception as e:
+            self.logger.error(f"AI loop died: {e}", module="Orchestrator")
+        finally:
+            self._ai_loop_stopped.set()
+
+    def _run_ai_loop_body(self):
         from core.audio_manager import AudioManager
 
         # AudioManager is always built — needed for cues/feedback in every mode.
@@ -743,86 +957,128 @@ class Orchestrator:
                 module="Orchestrator",
             )
             self._enter_collection_mode(announce=True)
+        elif not self.engine_wanted(self.mode, collecting=False):
+            # Booted into the neutral mode: never open the camera in the first
+            # place. Opening it just to close it on the first tick would cost a
+            # sensor init (and the VI channel churn that goes with it) for
+            # nothing.
+            self.logger.ok(
+                f"Booting in mode '{self.mode}' — camera stays closed",
+                module="Orchestrator",
+            )
         else:
             self._start_aural_engine()
             self.logger.ok("AI Engine + Audio Manager ready", module="Orchestrator")
 
         while self._running:
-            # Heartbeat from the loop itself: the engine thread is alive even
-            # when the camera is down, so the watchdog must NOT reload-hammer.
-            # (Repeated camera re-init on a leaked VI channel exhausts buffers
-            #  → "No buffer space available" → SIGSEGV. Recovery is handled
-            #  gently with backoff inside AIEngine.capture_and_infer instead.)
-            if self.watchdog and self.ai_engine is not None:
-                self.watchdog.heartbeat("ai_engine")
-
-            # Clear the mode-change event at the top of each cycle
-            self._mode_event.clear()
-
-            # Process one pending command from Web UI
-            cmd = self.pop_pending_command()
-            if cmd:
-                self._handle_command(cmd)
-
-            # ── Mode Ambil Data live transitions ──────────────────────────────
-            # Both camera open/close happen here on the AI thread so AIEngine and
-            # DataCollector never touch the camera concurrently.
-            want_collection = cfg.get("data_collection_mode", False)
-            if want_collection and self.ai_engine is not None:
-                self.logger.info("Switching → Mode Ambil Data", module="Orchestrator")
-                self._enter_collection_mode(announce=True)
-            elif not want_collection and self.ai_engine is None:
-                self.logger.info("Switching → Mode Normal", module="Orchestrator")
-                self._exit_collection_mode()
-
-            if want_collection:
-                # Camera owned by DataCollector; no inference, no detection audio.
-                self._mode_event.wait(timeout=0.2)
-                continue
-
-            # Cloud camera-QR pairing: while unpaired, watch frames for a pairing
-            # QR shown in the browser and let the device claim itself.
-            cloud = getattr(self, "cloud", None)
-            if cloud is not None and self.ai_engine is not None and cloud.wants_qr_scan():
-                payload = self.ai_engine.scan_pairing_qr()
-                if payload:
-                    cloud.on_qr_payload(payload)
-
-            # While AI Focus is active, skip inference and wait
-            if self.ai_focus:
-                self._mode_event.wait(timeout=0.05)
-                continue
-
-            mode = self.mode
-
-            # A tick must NEVER kill the AI thread. capture_and_infer has calls
-            # that can raise types the engine's own handler doesn't catch (NPU
-            # errors under memory pressure, MemoryError on this no-swap board).
-            # If that exception escaped, heartbeats would stop and the watchdog
-            # would reload-hammer the camera (→ VI buffer exhaustion → SIGSEGV),
-            # leaving a blind user with a silent, then crashing, device. Log it,
-            # pause briefly to avoid a tight error-spin, and keep looping.
+            # A tick must NEVER kill the AI thread, so the ENTIRE body is guarded
+            # — not just the inference dispatch. The collection-mode transitions
+            # and the pairing-QR scan open and close the camera, and
+            # _handle_command runs arbitrary web-queued work; all of them can
+            # raise types the engine's own handler doesn't catch (NPU errors
+            # under memory pressure, MemoryError on this no-swap board). If one
+            # escaped, heartbeats would stop and the watchdog would reload-hammer
+            # the camera (→ VI buffer exhaustion → SIGSEGV), leaving a blind user
+            # with a silent, then crashing, device. Log it, pause briefly to
+            # avoid a tight error-spin, and keep looping.
             try:
+                # Heartbeat from the loop itself: the engine thread is alive even
+                # when the camera is down, so the watchdog must NOT reload-hammer.
+                # (Repeated camera re-init on a leaked VI channel exhausts buffers
+                #  → "No buffer space available" → SIGSEGV. Recovery is handled
+                #  gently with backoff inside AIEngine.capture_and_infer instead.)
+                if self.watchdog and self.ai_engine is not None:
+                    self.watchdog.heartbeat("ai_engine")
+
+                # Clear the mode-change event at the top of each cycle
+                self._mode_event.clear()
+
+                # Process one pending command from Web UI
+                cmd = self.pop_pending_command()
+                if cmd:
+                    self._handle_command(cmd)
+
+                # ── Mode Ambil Data live transitions ──────────────────────────
+                # Both camera open/close happen here on the AI thread so AIEngine
+                # and DataCollector never touch the camera concurrently.
+                want_collection = cfg.get("data_collection_mode", False)
+                move = self.collection_transition(
+                    want_collection, self._collection_ready.is_set()
+                )
+                if move == "enter":
+                    self.logger.info("Switching → Mode Ambil Data", module="Orchestrator")
+                    self._enter_collection_mode(announce=True)
+                elif move == "exit":
+                    self.logger.info("Switching → Mode Normal", module="Orchestrator")
+                    self._exit_collection_mode()
+
+                if want_collection:
+                    # Camera owned by DataCollector; no inference, no detection audio.
+                    self._mode_event.wait(timeout=0.2)
+                    continue
+
+                # Cloud camera-QR pairing: while unpaired, watch frames for a
+                # pairing QR shown in the browser and let the device claim itself.
+                cloud = getattr(self, "cloud", None)
+                if cloud is not None and self.ai_engine is not None and cloud.wants_qr_scan():
+                    payload = self.ai_engine.scan_pairing_qr()
+                    if payload:
+                        cloud.on_qr_payload(payload)
+
+                # While AI Focus is active, skip inference and wait
+                if self.ai_focus:
+                    self._mode_event.wait(timeout=0.05)
+                    continue
+
+                mode = self.mode
+
+                # ── Camera ownership follows the mode ─────────────────────────
+                # Done HERE, on the AI thread, for the same reason the
+                # collection-mode handoff is: the cvitek VI open/close path
+                # admits exactly one thread, and a switch_mode() call arrives
+                # on the button/web thread.
+                if self.engine_wanted(mode, collecting=False):
+                    if self.ai_engine is None:
+                        self.logger.info(f"Mode {mode} needs the camera — starting engine",
+                                         module="Orchestrator")
+                        self._start_aural_engine()
+                elif self.ai_engine is not None:
+                    self.logger.info("Idle — releasing camera and NPU",
+                                     module="Orchestrator")
+                    self._release_aural_engine()
+
+                started = time.monotonic()
                 if mode == "explorer":
                     from modes.explorer_mode import run_explorer_tick
                     run_explorer_tick(self)
                 elif mode == "context":
                     from modes.context_mode import run_context_tick
                     run_context_tick(self)
+                elif mode == "idle":
+                    from modes.idle_mode import run_idle_tick
+                    run_idle_tick(self)
+                    continue                      # parks itself; nothing to pace
                 elif mode == "qris":
                     # QRIS only activates on-demand via command; idle here
                     self._mode_event.wait(timeout=0.1)
+                    continue
                 else:
                     self._mode_event.wait(timeout=0.1)
+                    continue
+
+                # ── Pace the tick to the power plan ───────────────────────────
+                # Without this the loop runs flat out and the "throttle" was
+                # pure theatre: it wrote camera_fps to an already-open camera
+                # and bought no idle time at all. Waiting on the mode event
+                # rather than sleeping keeps a button press instant even when
+                # the budget is two frames a second.
+                rest = self.tick_delay(time.monotonic() - started)
+                if rest > 0:
+                    self._mode_event.wait(timeout=rest)
             except Exception as e:
-                self.logger.warn(f"AI tick error ({mode}): {e}",
+                self.logger.warn(f"AI tick error ({self.mode}): {e}",
                                  module="Orchestrator")
                 self._mode_event.wait(timeout=0.5)
-
-        # Loop exited (self._running went False): tell stop() the AI thread is
-        # no longer touching the camera, so it can release() without racing an
-        # in-flight frame read.
-        self._ai_loop_stopped.set()
 
     def _handle_command(self, cmd_obj: dict):
         cmd  = cmd_obj.get("cmd")
@@ -863,6 +1119,14 @@ class Orchestrator:
         self._mode_event.set()   # unblock any waiting loop
         if self.audio_manager:
             self.audio_manager.stop()
+        # Wait for the AI loop to leave its body BEFORE touching anything that
+        # opens or closes the camera. The AI thread is the only thread allowed in
+        # the cvitek VI open/close path (see _run_ai_loop_body) and it may be
+        # inside _enter_collection_mode() -> dc.start() or _exit_collection_mode()
+        # -> dc.stop() at this very moment. A second thread entering that path
+        # leaks the VI channel ("No buffer space available" → SIGSEGV on the next
+        # start), and a blind sleep races a slow _cam.read() the same way.
+        self._ai_loop_stopped.wait(timeout=2.0)
         # Stop dataset capture if we're in Mode Ambil Data — otherwise its camera
         # (VI channel) and CSV file leak on shutdown and the next start SIGSEGVs
         # in the C camera layer. stop() is a no-op if capture isn't running.
@@ -873,10 +1137,7 @@ class Orchestrator:
                 pass
         # Release the camera explicitly. Without this, a SIGTERM/kill leaves the
         # cvitek VI channel allocated ("No buffer space available"), and the next
-        # start SIGSEGVs in the C camera layer before Python can catch it. Wait
-        # for the AI loop to finish its in-flight frame read first — a blind
-        # sleep can race a slow _cam.read() still running on the AI thread.
-        self._ai_loop_stopped.wait(timeout=2.0)
+        # start SIGSEGVs in the C camera layer before Python can catch it.
         if self.ai_engine:
             try:
                 self.ai_engine.release()

@@ -604,6 +604,12 @@ class AuralAIHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _serve_snapshot(self):
+        # Tell the AI loop someone is looking, so it starts paying for the JPEG
+        # encode again. It stops on its own once the polling stops.
+        try:
+            self.orch.note_preview_request()
+        except Exception:
+            pass
         snap = self.orch.snapshot
         if snap is None:
             self._send_404()
@@ -877,6 +883,7 @@ class AuralAIHandler(BaseHTTPRequestHandler):
         src_dir = os.path.join(base, "brand", brand)
         copied = 0
         for kind, canon in self._BRAND_FILES.items():
+            got = set()
             for ext in ("wav", "pcm"):
                 src = os.path.join(src_dir, "%s.%s" % (kind, ext))
                 if not os.path.exists(src):
@@ -887,8 +894,20 @@ class AuralAIHandler(BaseHTTPRequestHandler):
                     shutil.copyfile(src, tmp)
                     os.replace(tmp, dst)   # atomic swap of the active greeting
                     copied += 1
+                    got.add(ext)
                 except OSError as e:
                     return False, "copy %s.%s: %s" % (kind, ext, e)
+            # A brand that ships only .wav would otherwise leave the PREVIOUS
+            # brand's .pcm in place — and nothing would ever regenerate it:
+            # _ensure_pcm short-circuits on `if os.path.exists(pcm)`, and the
+            # fast boot cue in main.py reads the .pcm directly. The UI would say
+            # one brand while the device audibly greets with the other. Drop the
+            # stale derived file so it is rebuilt from the new .wav on next play.
+            if "wav" in got and "pcm" not in got:
+                try:
+                    os.remove(os.path.join(base, "%s.pcm" % canon))
+                except OSError:
+                    pass
         if copied == 0:
             return False, "no audio for brand '%s' (looked in %s)" % (brand, src_dir)
         _cfg.update({"brand": brand})
@@ -935,6 +954,20 @@ class AuralAIHandler(BaseHTTPRequestHandler):
                     "allowed": ["chime", "speech", "both"],
                 }, 400)
                 return
+            # Which mode the device stands in at power-on. Rejected rather
+            # than coerced: a typo silently becoming "idle" would look like the
+            # setting simply doesn't work, and the pendamping setting it is the
+            # one person who cannot see the device's screen to check.
+            if "boot_mode" in data:
+                from core.orchestrator import Orchestrator
+                allowed = list(Orchestrator.MODES) + ["last"]
+                if data["boot_mode"] not in allowed:
+                    self._send_json({
+                        "error": "invalid boot_mode",
+                        "allowed": allowed,
+                        "hint": "mode saat perangkat dinyalakan, atau 'last'",
+                    }, 400)
+                    return
             if "scene_verbosity" in data and data["scene_verbosity"] not in ("sedang", "detail"):
                 self._send_json({
                     "error": "invalid scene_verbosity",
@@ -970,8 +1003,62 @@ class AuralAIHandler(BaseHTTPRequestHandler):
                     }, 400)
                     return
                 data["word_cache_max_words"] = max(0, min(40, mw))
+            # Camera orientation. Snapped to a quarter turn rather than
+            # rejected: the value reaches image.rotate() on the AI loop's hot
+            # path, and the same key also arrives via the cloud config push,
+            # which does no validation at all.
+            if "camera_rotation" in data:
+                from utils.orientation import VALID_ROTATIONS
+                try:
+                    deg = int(data["camera_rotation"])
+                except (TypeError, ValueError):
+                    deg = None
+                # Wrap (so -90 and 450 are accepted as 270 and 90) but do NOT
+                # snap: silently turning a typo'd 45 into 0 would leave the
+                # camera sideways while the UI reports it fixed.
+                rot = None if deg is None else deg % 360
+                if rot not in VALID_ROTATIONS:
+                    self._send_json({
+                        "error": "invalid camera_rotation",
+                        "allowed": list(VALID_ROTATIONS),
+                        "hint": "derajat searah jarum jam: 0, 90, 180, atau 270",
+                    }, 400)
+                    return
+                data["camera_rotation"] = rot
             if "setup_completed" in data:
-                data["setup_completed"] = bool(data["setup_completed"])
+                # One-way latch. COMPLETING setup here is the whole point of
+                # _BOOTSTRAP_OPEN_POSTS — the pendamping finishes the wizard from
+                # a phone with no token. CLEARING it is the opposite: it puts
+                # /config, /ai-settings, /ai-settings/test, /ai-settings/secure
+                # and /presets/apply back on the unauthenticated open list, so a
+                # single leaked LAN token (and /auth/token answers any RFC1918
+                # peer) would buy a standing bypass that outlives rotating that
+                # token. Nothing in the UI ever sends false — the wizard stays
+                # reachable at /setup regardless — so refuse the direction
+                # outright. Re-opening setup is a factory-reset-grade action and
+                # belongs out-of-band, by editing /root/config.json over SSH.
+                if not bool(data["setup_completed"]):
+                    self._send_json({
+                        "error": "forbidden",
+                        "hint":  "setup_completed tidak bisa dibatalkan lewat "
+                                 "/config; ubah /root/config.json lewat SSH",
+                    }, 403)
+                    return
+                data["setup_completed"] = True
+            # Speaker volume reaches player.volume() on every playback, in a
+            # blind user's ear. Clamped here as well as in Config.AUDIO_VOLUME so
+            # a bad value is rejected at the edge rather than silently corrected
+            # on every read.
+            if "audio_volume" in data:
+                try:
+                    vol = int(data["audio_volume"])
+                except (TypeError, ValueError):
+                    self._send_json({
+                        "error": "invalid audio_volume",
+                        "hint":  "kirim bilangan bulat 0-100",
+                    }, 400)
+                    return
+                data["audio_volume"] = max(0, min(100, vol))
             # device_name becomes the mDNS `.local` label — keep it DNS-safe.
             # Empty ("") is allowed: it reverts to the auto "aural-<id>" default.
             # Reject only a non-empty name that sanitizes to nothing (e.g. "@@@").
@@ -1008,6 +1095,17 @@ class AuralAIHandler(BaseHTTPRequestHandler):
                     f"POST /config ignored protected keys: {blocked}",
                     module="WebServer")
             cfg.update(data)
+            # Apply a new orientation to the live camera immediately — the
+            # helper re-clips the device and watches the preview come out the
+            # right way up. The engine picks it up on its own thread; every
+            # camera call has to stay off this HTTP thread.
+            if "camera_rotation" in data:
+                try:
+                    engine = getattr(self.orch, "ai_engine", None)
+                    if engine is not None:
+                        engine.request_orientation_reload()
+                except Exception:
+                    pass
             # Re-publish mDNS under the new name if it changed.
             if "device_name" in data:
                 try:
@@ -1263,7 +1361,7 @@ class AuralAIHandler(BaseHTTPRequestHandler):
     # ─── AI Settings endpoints ─────────────────────────────────────────────────
 
     def _serve_ai_settings(self):
-        from config import cfg
+        from config import cfg, _DEFAULTS
         data = cfg.as_dict()
         # Mask secrets — send only whether a key is set, not the value
         def _masked(key: str) -> str:
@@ -1287,16 +1385,16 @@ class AuralAIHandler(BaseHTTPRequestHandler):
 
         self._send_json({
             "ai_provider":   data.get("ai_provider", "openai"),
-            "ai_timeout_s":  data.get("ai_timeout_s", 15),
-            "openai_model":  data.get("openai_model", "gpt-4o-mini"),
+            "ai_timeout_s":  data.get("ai_timeout_s", _DEFAULTS["ai_timeout_s"]),
+            "openai_model":  data.get("openai_model", _DEFAULTS["openai_model"]),
             "openai_key_set":  _has("openai"),
             "openai_key_hint": _masked("openai_api_key"),
             "openai_key_status": _enc_status("openai"),
-            "gemini_model":  data.get("gemini_model", "gemini-1.5-flash"),
+            "gemini_model":  data.get("gemini_model", _DEFAULTS["gemini_model"]),
             "gemini_key_set":  _has("gemini"),
             "gemini_key_hint": _masked("gemini_api_key"),
             "gemini_key_status": _enc_status("gemini"),
-            "claude_model":  data.get("claude_model", "claude-haiku-4-5-20251001"),
+            "claude_model":  data.get("claude_model", _DEFAULTS["claude_model"]),
             "claude_key_set":  _has("claude"),
             "claude_key_hint": _masked("claude_api_key"),
             "claude_key_status": _enc_status("claude"),

@@ -31,6 +31,7 @@
   .chip { flex:1 1 150px; background:var(--surface-2); border:1px solid var(--border); border-radius:var(--r-md); padding:var(--s-2) var(--s-3); }
   .chip b { display:block; color:var(--ink-3); font-size:var(--t-xs); text-transform:uppercase; letter-spacing:.4px; font-weight:700; margin-bottom:3px; }
   .chip .v { font-size:var(--t-md); font-weight:700; }
+  .chip .v--warn { color:var(--warn); } .chip .v--danger { color:var(--danger); }
   .caption { margin-top:var(--s-3); background:var(--surface-2); border:1px solid var(--border); border-radius:var(--r-md); padding:var(--s-3); min-height:52px; }
   .caption .lbl { display:block; color:var(--ink-3); font-size:var(--t-xs); text-transform:uppercase; letter-spacing:.4px; font-weight:700; margin-bottom:4px; }
   .caption .val { font-size:var(--t-md); line-height:1.35; }
@@ -87,8 +88,17 @@
 
   /* camera preview */
   .prevhead { justify-content:space-between; }
-  .prevwrap { position:relative; background:#000; border-radius:var(--r-md); overflow:hidden; aspect-ratio:320/224; display:none; }
+  .prevwrap { position:relative; background:#000; border-radius:var(--r-md); overflow:hidden; aspect-ratio:var(--prev-ar, 320/224); display:none; }
   .prevwrap img { width:100%; height:100%; object-fit:contain; display:block; }
+
+  /* camera rotation picker — 2x2 so all four turns stay equal-sized and
+     thumb-reachable on a phone, which is where a helper re-mounts the device */
+  .subhead { font-size:var(--t-sm); font-weight:700; margin:var(--s-4) 0 var(--s-2); }
+  .rotgrid { display:grid; grid-template-columns:repeat(2,1fr); gap:var(--s-2); }
+  .rotbtn { min-height:60px; flex-direction:column; gap:2px; line-height:1.2; }
+  .rotbtn .s2 { font-size:var(--t-xs); font-weight:600; opacity:.85; }
+  .rotbtn[aria-pressed="true"] { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .rotbtn[aria-pressed="true"] .s2 { opacity:.95; }
 
   /* activity log */
   #log { font-family:var(--font-mono); font-size:var(--t-xs); line-height:1.55; max-height:190px; overflow-y:auto; background:var(--surface-2); border:1px solid var(--border); border-radius:var(--r-md); padding:var(--s-3); }
@@ -143,6 +153,7 @@
   <div class="statrow">
     <div class="chip"><b>Mode aktif</b><span class="v" id="stMode">—</span></div>
     <div class="chip"><b>Tahap</b><span class="v" id="stPhase">—</span></div>
+    <div class="chip"><b>Daya &amp; suhu</b><span class="v" id="stPower">—</span></div>
   </div>
   <div class="caption">
     <span class="lbl">Suara terakhir (yang didengar pengguna)</span>
@@ -209,6 +220,23 @@
   <p class="hint"><span class="role">Sedang</span>: satu kalimat singkat — lebih cepat &amp; makin sering instan saat cache kata terisi. <span class="role">Detail</span>: deskripsi panjang lengkap.</p>
 </section>
 
+<!-- BOOT MODE -->
+<section class="card" aria-labelledby="h-boot">
+  <h2 id="h-boot">Mode saat perangkat dinyalakan</h2>
+  <div class="seg" role="group" aria-label="Mode saat dinyalakan">
+    <button class="btn" id="bmIdle" aria-pressed="false" onclick="setBootMode('idle')">
+      Diam<span class="s2">netral · hemat</span>
+    </button>
+    <button class="btn" id="bmExplorer" aria-pressed="false" onclick="setBootMode('explorer')">
+      Explorer<span class="s2">langsung deteksi</span>
+    </button>
+    <button class="btn" id="bmLast" aria-pressed="false" onclick="setBootMode('last')">
+      Terakhir<span class="s2">lanjutkan mode sebelumnya</span>
+    </button>
+  </div>
+  <p class="hint"><span class="role">Diam</span>: perangkat menyala, terhubung, tapi belum mengamati apa pun — kamera dilepas, jadi paling dingin dan paling hemat. Tekan tombol MODE untuk mulai. <span class="role">Explorer</span>: langsung mendeteksi begitu menyala.</p>
+</section>
+
 <!-- TECHNICAL GROUP — collapsed by default; everyday controls stay above -->
 <details class="tech" id="techDetails">
 <summary>Setelan teknis — mode suara, latensi &amp; kontrol QA</summary>
@@ -264,6 +292,7 @@
 <section class="card" aria-labelledby="h-qa">
   <h2 id="h-qa">Kontrol langsung (QA)</h2>
   <div class="sgrid" style="margin-bottom:var(--s-2)">
+    <button class="btn" id="qIdle"     onclick="cmd('set_mode',{mode:'idle'})">Diam</button>
     <button class="btn" id="qExplorer" onclick="cmd('set_mode',{mode:'explorer'})">Explorer</button>
     <button class="btn" id="qContext"  onclick="cmd('set_mode',{mode:'context'})">Context</button>
     <button class="btn" id="qQris"     onclick="cmd('set_mode',{mode:'qris'})">QRIS</button>
@@ -278,7 +307,7 @@
 
 </details>
 
-<!-- PREVIEW -->
+<!-- PREVIEW + CAMERA ROTATION -->
 <section class="card" aria-labelledby="h-prev">
   <h2 id="h-prev" class="prevhead">
     <span>Pratinjau kamera</span>
@@ -286,6 +315,23 @@
   </h2>
   <div class="prevwrap" id="prevWrap"><img id="prevImg" alt="Pratinjau kamera perangkat"></div>
   <p class="hint" id="prevHint" style="display:none">Bantu arahkan kamera saat memindai QR / QRIS.</p>
+
+  <h3 id="h-rot" class="subhead">Arah kamera</h3>
+  <div class="rotgrid" role="group" aria-labelledby="h-rot">
+    <button class="btn rotbtn" id="rot0"   aria-pressed="false" onclick="setRotation(0)">
+      Normal<span class="s2">0°</span>
+    </button>
+    <button class="btn rotbtn" id="rot90"  aria-pressed="false" onclick="setRotation(90)">
+      Putar kanan<span class="s2">90°</span>
+    </button>
+    <button class="btn rotbtn" id="rot180" aria-pressed="false" onclick="setRotation(180)">
+      Terbalik<span class="s2">180°</span>
+    </button>
+    <button class="btn rotbtn" id="rot270" aria-pressed="false" onclick="setRotation(270)">
+      Putar kiri<span class="s2">270°</span>
+    </button>
+  </div>
+  <p class="hint" id="rotHint">Pakai kalau perangkat dipasang di posisi lain dan gambarnya jadi <span class="role">terbalik</span> atau <span class="role">miring</span>. Nyalakan pratinjau dulu supaya kelihatan hasilnya. Setelan ini <span class="role">tersimpan permanen</span> — tetap dipakai setelah perangkat dimatikan.</p>
 </section>
 
 <!-- LOG -->
@@ -438,6 +484,44 @@ async function nudgeVol(delta){
   }catch(e){ logLine('   ✗ gagal (' + (e.name||e) + ')', 'err'); }
 }
 
+// ── camera rotation (persisted in /root/config.json — survives a power cut) ──
+// The device rotates the FRAME ITSELF, so the preview below, the spoken
+// left/right, and the collected photos all agree. That is why this posts to the
+// device instead of just CSS-rotating the <img>: a preview-only turn would look
+// fixed while every alert stayed mirrored.
+const ROTS = [0, 90, 180, 270];
+let rotEditingUntil = 0;   // suppress poll reconcile right after a tap
+function applyRotation(deg){
+  ROTS.forEach(r => {
+    const el = $('rot' + r);
+    if (el) el.setAttribute('aria-pressed', r === deg ? 'true' : 'false');
+  });
+}
+// Keep the preview box the shape of the rotated frame — a quarter turn makes a
+// landscape sensor portrait, and a fixed 320/224 box would letterbox it.
+function applyPreviewShape(w, h){
+  if (!w || !h) return;
+  document.documentElement.style.setProperty('--prev-ar', w + '/' + h);
+}
+async function setRotation(deg){
+  rotEditingUntil = Date.now() + 2500;
+  applyRotation(deg);                       // optimistic; poll reconciles
+  logLine('arah kamera: ' + (deg ? deg + '°' : 'normal'));
+  try{
+    const r = await postConfig({camera_rotation: deg});
+    const d = await r.json().catch(()=>({}));
+    if (d.ok){
+      logLine('   ✓ arah kamera tersimpan (' + (deg ? deg + '°' : 'normal') + ')', 'ok');
+      // Pull a fresh frame right away so the turn is visible immediately —
+      // cancelling the pending tick first, or we would leave two refresh
+      // chains running and double the snapshot load for the rest of the session.
+      if (prevOn){ clearTimeout(prevTimer); prevTimer = null; refreshPrev(); }
+    } else {
+      logLine('   ✗ ' + (d.error || ('HTTP '+r.status)), 'err');
+    }
+  }catch(e){ logLine('   ✗ gagal (' + (e.name||e) + ')', 'err'); }
+}
+
 // ── description verbosity ─────────────────────────────────────────────────────
 async function setVerbosity(v){
   logLine('panjang deskripsi: ' + v);
@@ -447,6 +531,26 @@ async function setVerbosity(v){
     if (d.ok) logLine('   ✓ deskripsi: ' + v + ' (aktif)', 'ok');
     else      logLine('   ✗ ' + (d.error || ('HTTP '+r.status)), 'err');
   }catch(e){ logLine('   ✗ gagal (' + (e.name||e) + ')', 'err'); }
+}
+
+// ── boot mode: which mode the device stands in at power-on ───────────────────
+async function setBootMode(m){
+  logLine('mode saat nyala: ' + m);
+  applyBootMode(m);            // optimistic; the status poll reconciles
+  try{
+    const r = await postConfig({boot_mode:m});
+    const d = await r.json().catch(()=>({}));
+    if (d.ok) logLine('   ✓ mode saat nyala: ' + m, 'ok');
+    else      logLine('   ✗ ' + (d.error || ('HTTP '+r.status)), 'err');
+  }catch(e){ logLine('   ✗ gagal (' + (e.name||e) + ')', 'err'); }
+}
+
+function applyBootMode(m){
+  const map = {idle:'bmIdle', explorer:'bmExplorer', last:'bmLast'};
+  Object.keys(map).forEach(k=>{
+    const el = $(map[k]);
+    if (el) el.setAttribute('aria-pressed', k === m ? 'true' : 'false');
+  });
 }
 
 // ── audio render mode: caching per-kata (true) vs satu blok audio (false) ─────
@@ -588,7 +692,17 @@ function setConn(ok){
   $('dot').className = 'dot ' + (ok ? 'dot--ok' : 'dot--danger');
   $('connTxt').textContent = ok ? 'tersambung' : 'terputus';
 }
-function modeLabel(m){ return ({explorer:'Explorer',context:'Context',qris:'QRIS'})[m] || m || '—'; }
+function modeLabel(m){ return ({idle:'Diam',explorer:'Explorer',context:'Context',qris:'QRIS'})[m] || m || '—'; }
+
+// What the device decided about its own temperature. It no longer says this
+// out loud — the person wearing it can't act on it — so this chip is where a
+// pendamping sees that the device eased itself off.
+const POWER_TIER = {
+  normal:   {txt:'normal',        cls:''},
+  warm:     {txt:'hemat ringan',  cls:'v--warn'},
+  hot:      {txt:'hemat (panas)', cls:'v--warn'},
+  critical: {txt:'hemat maksimal',cls:'v--danger'},
+};
 
 function applyState(s){
   const onboarding = (s.setup_completed === false) && (s.url_ack === false);
@@ -623,13 +737,25 @@ function applyState(s){
     $('lActShort').textContent  = qris ? 'Pindai QRIS' : 'Deskripsikan';
     $('lActLong').textContent   = 'Ulangi hasil';
     $('bActShort').disabled = false; $('bActLong').disabled = false;
-    $('hMode').innerHTML = '<span class="role">Tekan</span>: putar mode Explorer→Context→QRIS · <span class="role">Tekan lama</span>: ucapkan ulang alamat web.';
+    $('hMode').innerHTML = '<span class="role">Tekan</span>: putar mode Diam→Explorer→Context→QRIS · <span class="role">Tekan lama</span>: ucapkan ulang alamat web.';
     $('hAct').innerHTML  = '<span class="role">Tekan</span>: ' + (qris?'pindai kode QRIS':'deskripsikan sekitar') + ' · <span class="role">Tekan lama</span>: ulangi hasil terakhir.';
   }
 
-  ['Explorer','Context','Qris'].forEach(n=>{
+  ['Idle','Explorer','Context','Qris'].forEach(n=>{
     const el = $('q'+n); if (el) el.classList.toggle('btn--cur', s.mode === n.toLowerCase());
   });
+
+  const p = s.power || {};
+  const tier = POWER_TIER[p.tier] || POWER_TIER.normal;
+  const temp = (s.temperature != null) ? Math.round(s.temperature) + '°C' : '—';
+  const el = $('stPower');
+  if (el){
+    el.textContent = temp + ' · ' + tier.txt
+                   + (p.target_fps != null ? ' · ' + p.target_fps + ' fps' : '');
+    el.className = 'v ' + tier.cls;
+  }
+
+  applyBootMode((s.power && s.power.boot_mode) || 'idle');
 
   const sv = s.scene_verbosity || 'detail';
   $('vSedang').setAttribute('aria-pressed', sv === 'sedang' ? 'true' : 'false');
@@ -642,6 +768,11 @@ function applyState(s){
     $('gapRange').value = s.word_cache_gap_ms;
     onGapInputDisplayOnly(s.word_cache_gap_ms);
   }
+
+  if (Date.now() > rotEditingUntil && typeof s.camera_rotation === 'number'){
+    applyRotation(s.camera_rotation);
+  }
+  applyPreviewShape(s.cam_w, s.cam_h);
 
   renderMetrics(s);
 

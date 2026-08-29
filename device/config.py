@@ -21,6 +21,17 @@ _DEFAULTS: dict = {
     "input_width":              320,
     "input_height":             224,
     "camera_fps":               30,
+    # ── Camera orientation (persisted across reboots) ─────────────────────────
+    # Quarter-turn correction applied to every frame the moment it leaves the
+    # sensor: 0 | 90 | 180 | 270, clockwise. The mount angle changes with how
+    # the device is worn (chest clip vs. hung the other way round vs. strapped
+    # sideways), and a rotated frame silently corrupts everything downstream —
+    # left/right in the spoken alert, the ground-contact distance hint, and the
+    # collected dataset. Set from the web UI (POST /config), stored here so the
+    # device comes back correctly oriented after a power cycle. 180 is applied
+    # by the sensor ISP (free); quarter turns rotate in software and swap the
+    # frame axes. See utils/orientation.py.
+    "camera_rotation":          0,
     "snapshot_interval_ms":     500,
     "web_host":                 "0.0.0.0",
     "web_port":                 8080,
@@ -116,8 +127,41 @@ _DEFAULTS: dict = {
     ),
     "log_path":                 "/root/logs",
     "log_max_lines":            500,
+    # ── Adaptive power management (utils/power.py) ────────────────────────────
+    # thermal_throttle_temp_c is the "hot" rung of the governor's ladder; the
+    # warm and critical rungs sit at fixed offsets around it, so this one number
+    # tunes the whole response. The device answers heat by doing less work —
+    # fewer frames, fewer inferences, no dashboard preview — and never by
+    # announcing it. Someone walking with the device strapped on cannot act on
+    # a "suhu tinggi" warning, and telling them to power down mid-journey is
+    # not an option the product has.
     "thermal_throttle_temp_c":  80.0,
+    # Legacy: superseded by the governor's per-tier fps ladder. Kept so an
+    # existing /root/config.json and cfg.THERMAL_THROTTLE_FPS still resolve.
     "thermal_throttle_fps":     10,
+    # How far below a tier's entry temperature the device must cool before it
+    # steps back down. Stops a reading hovering on a boundary from retiming the
+    # loop every poll.
+    "power_recover_margin_c":   5.0,
+    # Quiet-scene downshift: after this many seconds with no detections, no
+    # pending command and no recent interaction, drop to power_idle_fps. One
+    # busy frame restores the full rate immediately — the event that ends a
+    # quiet stretch is exactly the one the user needs to hear about.
+    "power_idle_after_s":       20.0,
+    "power_idle_fps":           8.0,
+    # How long after the last /snapshot fetch the device keeps encoding the
+    # dashboard preview. The page polls twice a second, so a few seconds spans
+    # normal polling without leaving the encoder running for a closed tab.
+    "preview_grace_s":          5.0,
+    # ── Boot mode ─────────────────────────────────────────────────────────────
+    # Mode the device stands in at power-on: "idle" | "explorer" | "context" |
+    # "qris" | "last". Default "idle" — the neutral state where the device is
+    # on, reachable and quiet. Booting straight into explorer means it starts
+    # narrating before anyone has asked it to, while it is still in a bag or
+    # being handed over. "last" resumes whatever mode it was switched off in.
+    "boot_mode":                "idle",
+    # Written on every mode switch so boot_mode="last" has something to read.
+    "last_mode":                "explorer",
     "watchdog_timeout_s":       5.0,
     # ── Hardware buttons (active-low to GND; internal pull-up, no resistor) ───
     # The GPIO listener enables PULL_UP, so any free standard GPIO works — wire
@@ -277,18 +321,35 @@ class Config:
             # Corrupt/unreadable config: preserve it as .corrupt for recovery
             # instead of letting the next save() silently overwrite it (which
             # would permanently lose device_token, pairing, and encrypted keys).
+            backed_up = False
             try:
                 if _CONFIG_PATH.exists():
                     os.replace(_CONFIG_PATH, str(_CONFIG_PATH) + ".corrupt")
+                backed_up = True
             except Exception:
-                pass
-            self._write_defaults()
+                backed_up = False
+            # Only regenerate defaults once the original is safely out of the
+            # way. If the rename itself failed (read-only mount after an fsck,
+            # EACCES, or the path is a directory) then writing defaults here
+            # would destroy the only copy of device_token and every
+            # *_api_key_enc — precisely the loss the backup exists to prevent.
+            # Run on the in-memory defaults __init__ already loaded and leave
+            # the file alone; an operator can still recover it by hand.
+            if backed_up:
+                self._write_defaults()
 
     def _write_defaults(self):
+        # Same tmp+fsync+replace durability as save(): a half-written defaults
+        # file is exactly as unreadable as the corrupt one it replaces, and
+        # would send the next boot down this same path.
         try:
             _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-            with open(_CONFIG_PATH, "w") as f:
+            tmp = str(_CONFIG_PATH) + ".tmp"
+            with open(tmp, "w") as f:
                 json.dump(_DEFAULTS, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, _CONFIG_PATH)
         except Exception:
             pass
 
@@ -359,6 +420,18 @@ class Config:
         return self.get("camera_fps")
 
     @property
+    def CAMERA_ROTATION(self) -> int:
+        """Frame rotation in clockwise degrees, snapped to 0/90/180/270.
+
+        Normalized at the READ site as well as in the POST /config handler: the
+        cloud config push writes straight into cfg without going through that
+        validation, and a bogus value here would be handed to image.rotate()
+        on the AI loop's hot path.
+        """
+        from utils.orientation import normalize_rotation
+        return normalize_rotation(self.get("camera_rotation", 0))
+
+    @property
     def SNAPSHOT_INTERVAL_MS(self) -> int:
         return self.get("snapshot_interval_ms")
 
@@ -392,7 +465,16 @@ class Config:
 
     @property
     def AI_TIMEOUT_S(self) -> int:
-        return self.get("ai_timeout_s", 15)
+        # Every adapter reads its socket timeout here rather than doing its own
+        # int() on the raw value. ai_timeout_s is settable via POST /config and
+        # the cloud config push and neither validates it; a bare ValueError
+        # raised inside an adapter would bypass ai_engine's `except AdapterError`
+        # and leave the user with silence instead of the "AI error" cue.
+        try:
+            t = int(self.get("ai_timeout_s", 15))
+        except (TypeError, ValueError):
+            return 15
+        return max(1, min(120, t))
 
     @property
     def OPENAI_API_KEY(self) -> str:
@@ -473,7 +555,17 @@ class Config:
 
     @property
     def AUDIO_VOLUME(self) -> int:
-        return int(self.get("audio_volume", 80))
+        # Clamped at the READ site, not only in the POST /config handler: this
+        # value is passed straight to player.volume() for a speaker sitting in a
+        # blind user's ear, and the cloud config push (cloud.py
+        # ALLOWED_CONFIG_KEYS) writes audio_volume without going through that
+        # handler's validation at all.
+        try:
+            vol = int(self.get("audio_volume", 80))
+        except (TypeError, ValueError):
+            return 80
+        return max(0, min(100, vol))
+
 
     @property
     def PROMPT_SCENE(self) -> str:

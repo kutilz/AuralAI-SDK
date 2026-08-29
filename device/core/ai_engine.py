@@ -21,7 +21,7 @@ except ImportError:
     MAIX_AVAILABLE = False
 
 from config import cfg, RELEVANT_LABELS, COCO_LABEL_MAP
-from utils import distance
+from utils import distance, orientation
 from utils.logger import position_from_bbox
 from utils.stage_timer import StageTimer
 from utils.scene_metrics import scene_metrics
@@ -79,6 +79,15 @@ class AIEngine:
         # (stops an object on the near/far boundary flapping every frame).
         self._prev_tiers: dict = {}
 
+        # Camera orientation (cfg["camera_rotation"], persisted). _rot_software
+        # is the residual turn we still have to do ourselves after the sensor
+        # ISP took what it could — 0 whenever the hardware handled it all.
+        # _orientation_dirty makes a live change from POST /config land on THIS
+        # thread at the top of the next frame: every camera call has to stay on
+        # the AI loop, never on the HTTP thread mid-read.
+        self._rot_software: int  = 0
+        self._orientation_dirty  = False
+
         self._init_camera()
         self._init_model()
 
@@ -100,18 +109,106 @@ class AIEngine:
         except Exception as e:
             self.logger.error(f"Camera init failed: {e}", module="AIEngine")
             self._cam = None
+            return
+        self._apply_orientation()
+
+    # ─── Camera orientation ───────────────────────────────────────────────────
+
+    def request_orientation_reload(self):
+        """Ask the AI loop to re-read cfg["camera_rotation"] on its next frame.
+
+        Called from the web thread after POST /config so a mount change takes
+        effect immediately — the whole point of the setting is that the helper
+        re-clips the device and sees the preview come out the right way up
+        without a reboot. The actual camera calls happen on the AI thread.
+        """
+        self._orientation_dirty = True
+
+    def _apply_orientation(self):
+        """Split cfg["camera_rotation"] into a hardware half and a leftover.
+
+        A half turn is exactly hmirror+vflip, which the sensor ISP does for
+        free; taking it there keeps the 1-core CPU out of the 30fps frame path
+        entirely. Anything the ISP can't do (quarter turns, or a build with no
+        mirror/flip accessors) falls through to a software rotate. The explicit
+        clear on the non-180 branches matters: a camera object that is still
+        carrying a previous session's mirror would otherwise stack with the
+        software turn and land on the wrong orientation.
+        """
+        self._orientation_dirty = False
+        rot = cfg.CAMERA_ROTATION
+        if self._cam is None:
+            self._rot_software = rot
+            return
+        if rot == 180 and orientation.set_hw_flip(self._cam, True, True):
+            self._rot_software = 0
+            how = "sensor (hmirror+vflip)"
+        else:
+            orientation.set_hw_flip(self._cam, False, False)
+            self._rot_software = rot
+            how = "software" if rot else "sensor"
+        if rot:
+            self.logger.ok(
+                f"Camera rotation: {orientation.rotation_label(rot)} via {how}",
+                module="AIEngine",
+            )
+        else:
+            self.logger.info("Camera rotation: normal", module="AIEngine")
+
+    def frame_dims(self) -> tuple:
+        """(width, height) of the frame AS THE PIPELINE SEES IT.
+
+        A quarter turn swaps the axes, so every bbox normalization downstream
+        (position_from_bbox, area_ratio, the ground-contact hint) has to divide
+        by these, not by the configured capture size.
+        """
+        return orientation.rotated_dims(
+            cfg.INPUT_WIDTH, cfg.INPUT_HEIGHT, self._rot_software
+        )
 
     def _init_model(self):
         if not MAIX_AVAILABLE:
             self.logger.warn("MaixPy unavailable — model skipped", module="AIEngine")
             return
         try:
-            self._detector    = nn.YOLO11(model=cfg.MODEL_PATH)
+            cls, cls_name      = self._detector_class(cfg.MODEL_PATH)
+            self._detector     = cls(model=cfg.MODEL_PATH)
             self._model_loaded = True
-            self.logger.ok(f"YOLO11 loaded: {cfg.MODEL_PATH}", module="AIEngine")
+            self.logger.ok(f"{cls_name} loaded: {cfg.MODEL_PATH}", module="AIEngine")
         except Exception as e:
             self.logger.error(f"Model load failed: {e}", module="AIEngine")
             self._model_loaded = False
+
+    @staticmethod
+    def _detector_class(model_path):
+        """Pick the maix.nn class that matches the .mud and exists in this build.
+
+        MaixPy 4.5.x ships YOLOv5/YOLOv8 only — `nn.YOLO11` was added later — so
+        hardcoding one class breaks on whichever image the unit happens to run.
+        The .mud's `model_type` is the source of truth; fall back to whatever the
+        build actually exposes.
+        """
+        wanted = ""
+        try:
+            with open(model_path) as f:
+                for line in f:
+                    if line.strip().startswith("model_type"):
+                        wanted = line.split("=", 1)[1].strip().lower()
+                        break
+        except Exception:
+            pass
+
+        preferred = {
+            "yolo11": ("YOLO11", "YOLOv8", "YOLOv5"),
+            "yolov8": ("YOLOv8", "YOLO11", "YOLOv5"),
+            "yolov5": ("YOLOv5", "YOLOv8", "YOLO11"),
+        }.get(wanted, ("YOLO11", "YOLOv8", "YOLOv5"))
+
+        for name in preferred:
+            cls = getattr(nn, name, None)
+            if cls is not None:
+                return cls, name
+        raise RuntimeError("maix.nn exposes no usable YOLO class")
 
     # ─── Resource management (called by Orchestrator on mode switch) ──────────
 
@@ -184,6 +281,11 @@ class AIEngine:
 
         t0 = time.time()
 
+        # Pick up a live camera_rotation change (POST /config) here, on the AI
+        # thread, before the read — never from the HTTP thread mid-frame.
+        if self._orientation_dirty:
+            self._apply_orientation()
+
         # ── Camera read with single auto-recover ──────────────────────────────
         try:
             frame = self._cam.read()
@@ -197,17 +299,42 @@ class AIEngine:
             time.sleep(0.3)
             try:
                 self._cam.open()
+                # A reopened sensor comes back with its ISP defaults, so the
+                # hardware half turn is gone. Without this, a device mounted
+                # upside down quietly rights itself after any camera hiccup —
+                # and every spoken "kiri"/"kanan" inverts with it.
+                self._apply_orientation()
                 frame = self._cam.read()
                 self.logger.ok("Camera recovered", module="AIEngine")
             except Exception as e2:
                 self.logger.error(f"Camera reopen failed: {e2}", module="AIEngine")
                 return None, [], {}
 
+        # Orientation correction happens HERE — before the snapshot, before
+        # inference, before the QR decode — so every consumer (web preview,
+        # YOLO, position/distance math, pairing scan) sees one frame the right
+        # way up. 0 returns the same object, so the common case costs nothing.
+        if self._rot_software:
+            frame = orientation.rotate_image(frame, self._rot_software)
+
         t_cam = (time.time() - t0) * 1000
         self._last_frame = frame
 
-        jpeg = frame.to_jpeg()
-        self.orch.snapshot = bytes(jpeg.to_bytes())
+        # ── Dashboard preview (only when it is actually wanted) ───────────────
+        # to_jpeg() is ~17 ms of an ~18 ms tick on this SoC — by far the most
+        # expensive thing here after inference — and for most of the device's
+        # life nobody has the page open. The orchestrator says whether anyone
+        # asked recently AND whether the thermal budget still allows it.
+        # Cloud captures (describe / QRIS) encode _last_frame on demand in
+        # _frame_jpeg(), so they are unaffected.
+        jpeg = None
+        if self.orch.wants_preview():
+            jpeg = frame.to_jpeg()
+            self.orch.snapshot = bytes(jpeg.to_bytes())
+        elif self.orch.snapshot is not None:
+            # Drop the old frame rather than serving one from hours ago: a
+            # stale preview is worse than none, because it looks live.
+            self.orch.snapshot = None
 
         # ── Inference ─────────────────────────────────────────────────────────
         t1         = time.time()
@@ -227,7 +354,8 @@ class AIEngine:
             t_infer = (time.time() - t1) * 1000
 
             t2         = time.time()
-            frame_area = cfg.INPUT_WIDTH * cfg.INPUT_HEIGHT
+            frame_w, frame_h = self.frame_dims()
+            frame_area = frame_w * frame_h
 
             for det in result:
                 label = COCO_LABEL_MAP.get(det.class_id, str(det.class_id))
@@ -243,11 +371,11 @@ class AIEngine:
                 # is_danger off it here to avoid changing existing behavior.
                 is_danger    = area_ratio > cfg.DANGER_AREA_THRESHOLD
                 pos          = position_from_bbox(
-                    x, y, w, h, cfg.INPUT_WIDTH, cfg.INPUT_HEIGHT
+                    x, y, w, h, frame_w, frame_h
                 )
                 # Coarse per-class distance tier with ground-contact hint +
                 # hysteresis (prev tier for this label stops boundary flapping).
-                bbox_bottom_norm = (y + h) / max(cfg.INPUT_HEIGHT, 1)
+                bbox_bottom_norm = (y + h) / max(frame_h, 1)
                 tier = distance.band(
                     label, area_ratio, bbox_bottom_norm,
                     prev_tier=self._prev_tiers.get(label), cfg=cfg,
@@ -310,8 +438,12 @@ class AIEngine:
             return detections
 
         max_move = float(cfg.get("detection_max_center_move", 0.25))
-        w = max(cfg.INPUT_WIDTH, 1)
-        h = max(cfg.INPUT_HEIGHT, 1)
+        # Effective (post-rotation) frame size: a quarter turn swaps the axes,
+        # and normalizing the box centre by the wrong one would distort the
+        # per-frame movement test that decides what counts as a phantom.
+        _fw, _fh = self.frame_dims()
+        w = max(_fw, 1)
+        h = max(_fh, 1)
 
         # Keep the highest-confidence box per label for this frame.
         best: dict = {}

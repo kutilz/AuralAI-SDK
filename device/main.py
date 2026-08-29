@@ -6,7 +6,7 @@ Threads:
   AILoop        — camera → NPU inference → audio queue
   WebServer     — HTTP dashboard + API
   Watchdog      — module health monitor (restarts crashed components)
-  HealthMonitor — hardware telemetry + thermal throttle
+  HealthMonitor — hardware telemetry → adaptive power governor
   BtnListener   — GPIO mode-cycle button (if configured)
 
 Boot-time optimization (2025-06-23)
@@ -73,11 +73,29 @@ def _boot_cue_fast():
         except Exception:
             pass
 
-        # Case 3: PCM missing → regenerate + play (the only self-heal path).
-        if not os.path.exists(pcm_path):
+        # Case 3: PCM missing OR older than the WAV it came from → regenerate
+        # (the only self-heal path). The mtime half matters after an audio
+        # deploy: a fresh auralai_menyala.wav sitting next to last release's
+        # .pcm would otherwise greet with the OLD recording forever, because
+        # this fast path never looks at the WAV at all.
+        wav_path = "/root/audio/auralai_menyala.wav"
+        try:
+            pcm_stale = os.path.getmtime(pcm_path) < os.path.getmtime(wav_path)
+        except OSError:
+            pcm_stale = False        # no WAV to compare against → leave it be
+        if pcm_stale or not os.path.exists(pcm_path):
             try:
-                from core.audio_manager import play_wav_blocking
-                play_wav_blocking("auralai_menyala.wav", volume=vol)
+                from core.audio_manager import (
+                    play_wav_blocking, _ensure_pcm_standalone,
+                )
+                if pcm_stale and os.path.exists("/tmp/.boot_chime_played"):
+                    # S00a's aplay already greeted this boot — off the stale
+                    # PCM, but playing a SECOND, different greeting on top of
+                    # it is worse than one outdated one. Rebuild the cache
+                    # quietly so the next boot is right, and stay silent now.
+                    _ensure_pcm_standalone(wav_path)
+                else:
+                    play_wav_blocking("auralai_menyala.wav", volume=vol)
             except Exception:
                 pass
             return
@@ -169,10 +187,9 @@ def main():
         throttle_temp_c=cfg.THERMAL_THROTTLE_TEMP_C,
         poll_interval_s=5.0,
     )
-    health.start(
-        on_throttle=orchestrator._on_thermal_throttle,
-        on_recover=orchestrator._on_thermal_recover,
-    )
+    # Every sample feeds the power governor (not just threshold crossings): a
+    # tiered plan with hysteresis has to see the trend to hold and release it.
+    health.start(on_sample=orchestrator.on_health_sample)
     logger.ok("HealthMonitor started", module="Main")
 
     # ── Data Collector ────────────────────────────────────────────────────────
