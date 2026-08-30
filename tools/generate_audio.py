@@ -160,6 +160,35 @@ CHIMES = {
     # borrowing the falling shape that means "error".
     "chime_obstacle": ("wood", [(1174.7, 0, 200, 1.00),
                                 (1174.7, 150, 260, 1.00)]),
+
+    # ── Volume mode (both buttons held together) ──────────────────────────────
+    # The whole set below is WOOD on purpose. Every bell cue in this file means
+    # something happened to the world (a mode changed, a capture ran, an error);
+    # volume mode is the one state where the user is adjusting the DEVICE, and a
+    # different timbre is what tells them — without a screen — which of the two
+    # they are in. Direction is carried by the interval, so up and down stay
+    # distinguishable even at the lowest level the buttons can reach.
+    #
+    # The level itself is not encoded in these cues at all: the step chime is
+    # played AT the new volume, so the user hears the setting rather than a
+    # number they would have to imagine.
+    "chime_vol_enter": ("wood", [(1046.5, 0, 140, 0.85),
+                                 (1318.5, 60, 140, 0.92),
+                                 (1568.0, 120, 260, 1.00)]),
+    "chime_vol_exit":  ("wood", [(1568.0, 0, 140, 1.00),
+                                 (1318.5, 60, 140, 0.92),
+                                 (1046.5, 120, 300, 0.85)]),
+    # One step louder / quieter: two taps, rising or falling. Short — these fire
+    # on every tap and a long ring would smear one step into the next.
+    "chime_vol_up":    ("wood", [(1318.5, 0, 110, 0.85),
+                                 (1760.0, 55, 170, 1.00)]),
+    "chime_vol_down":  ("wood", [(1568.0, 0, 110, 0.90),
+                                 (1046.5, 55, 190, 1.00)]),
+    # Already at the ceiling or the floor: two fast taps on ONE low pitch. No
+    # interval = no direction = "that press moved nothing", which is a different
+    # message from the error bell (something you asked for failed).
+    "chime_vol_limit": ("wood", [(880.0, 0, 130, 1.00),
+                                 (880.0, 75, 190, 0.85)]),
 }
 
 

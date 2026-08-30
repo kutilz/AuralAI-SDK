@@ -10,11 +10,27 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 from functools import partial
 
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+
+# Voices /v1/audio/speech accepts. Kept here rather than fetched so a device
+# with no internet can still validate a POST /config, and so an unknown name is
+# refused with a list instead of failing once per describe.
+_OPENAI_VOICES = {
+    "alloy", "ash", "ballad", "coral", "echo", "fable",
+    "nova", "onyx", "sage", "shimmer", "verse",
+}
+
+# What the "Coba suara" button speaks. A real-shaped sentence — positions and a
+# clearance call, the two things a description actually has to land — so the
+# listener is judging the voice on the words they will really hear.
+_TTS_TEST_PHRASE = ("Di depan ada seorang pria berkacamata berdiri dekat meja "
+                    "komputer. Di sebelah kanan Anda ada kursi kosong, jalur "
+                    "di depan aman.")
 _DEVICE_DIR = os.path.dirname(os.path.dirname(__file__))
 
 
@@ -359,6 +375,8 @@ class AuralAIHandler(BaseHTTPRequestHandler):
 
         if path == "/command":
             self._handle_command()
+        elif path == "/tts-test":
+            self._handle_tts_test()
         elif path == "/button":
             self._handle_button()
         elif path == "/config":
@@ -418,6 +436,7 @@ class AuralAIHandler(BaseHTTPRequestHandler):
     # POST paths that require token auth. Other POSTs and all GETs stay open.
     _AUTH_REQUIRED_POSTS = {
         "/command",
+        "/tts-test",
         "/config",
         "/ai-settings",
         "/ai-settings/test",
@@ -817,11 +836,60 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             self.logger.error(f"Command error: {e}")
             self._send_json({"error": str(e)}, 500)
 
+    def _handle_tts_test(self):
+        """Speak a fixed sample so a voice can be auditioned from the phone.
+
+        Without this, changing the voice means pressing Deskripsikan and waiting
+        out a whole AI round-trip to hear one sentence — and the pendamping
+        choosing the voice is often not the person holding the device. Body may
+        carry {"voice": "..."} to preview a voice WITHOUT saving it, so a
+        candidate can be rejected without ever having been the live setting.
+        """
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            data = json.loads(self.rfile.read(length)) if length else {}
+        except Exception:
+            data = {}
+
+        voice = str(data.get("voice", "")).strip()
+        if voice and voice not in _OPENAI_VOICES:
+            self._send_json({"error": "invalid voice",
+                             "allowed": sorted(_OPENAI_VOICES)}, 400)
+            return
+
+        am = getattr(self.orch, "audio_manager", None)
+        if am is None:
+            self._send_json({"error": "audio unavailable"}, 503)
+            return
+
+        from config import cfg as _cfg
+        prev = _cfg.get("tts_openai_voice", "alloy")
+        try:
+            if voice and voice != prev:
+                # In-memory only — never written to config.json, so a preview
+                # can't outlive the request or survive a reboot.
+                _cfg._data["tts_openai_voice"] = voice
+            am.clear()          # the sample is the point; drop what's queued
+            am.speak_scene(_TTS_TEST_PHRASE)
+            # Give the background renderer time to read the voice before we put
+            # the previous one back; speak_scene returns as soon as it starts.
+            time.sleep(0.4)
+        finally:
+            if voice and voice != prev:
+                _cfg._data["tts_openai_voice"] = prev
+
+        self._send_json({"ok": True, "voice": voice or prev,
+                         "text": _TTS_TEST_PHRASE})
+
     def _handle_button(self):
         """
         Inject a simulated MODE/ACTION button press — the web fallback for a
-        device whose physical buttons are dead. Body: {"button": "mode"|"action",
-        "long": bool}.
+        device whose physical buttons are dead. Body:
+        {"button": "mode"|"action"|"chord", "long": bool}.
+
+        "chord" is both buttons held together (open/close volume mode). It has
+        no long/short form: a page cannot hold two buttons, so the gesture is
+        sent as one event.
 
         Stays OPEN on the LAN (not in _AUTH_REQUIRED_POSTS) for the same reason
         as the /collect endpoints: a non-technical pendamping drives this from
@@ -835,9 +903,9 @@ class AuralAIHandler(BaseHTTPRequestHandler):
             data   = json.loads(self.rfile.read(length)) if length else {}
             which      = str(data.get("button", "")).strip().lower()
             long_press = bool(data.get("long", False))
-            if which not in ("mode", "action"):
+            if which not in ("mode", "action", "chord"):
                 self._send_json(
-                    {"error": "button must be 'mode' or 'action'"}, 400)
+                    {"error": "button must be 'mode', 'action' or 'chord'"}, 400)
                 return
             queued = self.orch.simulate_button(which, long_press)
             self.logger.info(
@@ -982,6 +1050,15 @@ class AuralAIHandler(BaseHTTPRequestHandler):
                     "error": "invalid tts_provider",
                     "allowed": ["auto", "gtts", "openai"],
                     "hint": "auto = openai kalau ada API key, kalau tidak gtts",
+                }, 400)
+                return
+            # Voice name is sent straight to the TTS API; a typo would come back
+            # as an HTTP 400 per describe and read to the user as "the device
+            # stopped talking", so reject it here where we can say why.
+            if "tts_openai_voice" in data and data["tts_openai_voice"] not in _OPENAI_VOICES:
+                self._send_json({
+                    "error": "invalid tts_openai_voice",
+                    "allowed": sorted(_OPENAI_VOICES),
                 }, 400)
                 return
             # Vision sampling temperature. Clamped rather than rejected: the

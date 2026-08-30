@@ -186,6 +186,22 @@ _DEFAULTS: dict = {
     "button_pin_action":        "A29",
     # Speaker volume (0-100); read by AudioManager on every play
     "audio_volume":             80,
+    # ── Volume mode (hold MODE + ACTION together) ────────────────────────────
+    # How long both buttons must be held together before volume mode opens.
+    # Long enough that a clumsy two-finger grab is not a chord, short enough
+    # that it is not a wait.
+    "button_chord_hold_s":      0.6,
+    # Volume mode closes itself this long after the last step, so the buttons
+    # are never left in a state the user has to remember to leave.
+    "volume_mode_timeout_s":    5.0,
+    # Points per press. 10 spans the useful range in 8 taps.
+    "volume_step":              10,
+    # Floor and ceiling for BUTTON-driven volume. Silence stays reachable from
+    # /config, never from the buttons: audio is the only channel a blind user
+    # has, and a device muted from the outside of the web UI cannot tell them
+    # how to get it back.
+    "volume_button_min":        20,
+    "volume_button_max":        100,
     # Auth: device token (auto-generated on first boot if empty)
     "device_token":             "",
     # CORS: list of allowed origins for dashboard. Empty list = same-origin only.

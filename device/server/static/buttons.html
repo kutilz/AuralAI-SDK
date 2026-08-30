@@ -60,6 +60,9 @@
   .seg .btn[aria-pressed="true"] .s2 { opacity:.95; }
 
   .sgrid { display:flex; flex-wrap:wrap; gap:var(--s-2); }
+  .vgrid { margin-bottom:var(--s-2); }
+  .vgrid .btn { flex:1 1 30%; min-width:88px; }
+  .vgrid .btn[aria-pressed="true"] { background:var(--accent); border-color:var(--accent); color:#fff; }
   .sgrid .btn { flex:1 1 30%; min-width:120px; }
   .btn--cur { box-shadow: inset 0 0 0 3px var(--accent-soft); border-color:var(--accent); }
 
@@ -176,6 +179,20 @@
     </button>
   </div>
   <p class="hint">Atur kenyaringan suara perangkat (0–100). Berlaku langsung.</p>
+  <div class="btngrid" style="margin-top:10px;">
+    <button class="btn" id="bChord" onclick="press('chord',false,this)">
+      <span class="tag">Di perangkat</span>
+      <span class="lbl">Tekan 2 tombol bersamaan</span>
+    </button>
+  </div>
+  <p class="hint" id="hChord">
+    Tahan tombol <span class="role">MODE</span> + <span class="role">ACTION</span>
+    bersamaan ±1 detik untuk masuk mode volume. Setelah itu
+    <span class="role">MODE</span> mengecilkan, <span class="role">ACTION</span>
+    membesarkan — tiap langkah dibunyikan pada volume barunya, jadi kenyaringan
+    langsung terdengar. Mode menutup sendiri setelah beberapa detik diam.
+    Lewat tombol, volume tidak bisa turun sampai bisu; itu hanya dari halaman ini.
+  </p>
 </section>
 
 <!-- MODE BUTTON -->
@@ -218,6 +235,28 @@
     </button>
   </div>
   <p class="hint"><span class="role">Sedang</span>: satu kalimat singkat — lebih cepat &amp; makin sering instan saat cache kata terisi. <span class="role">Detail</span>: deskripsi panjang lengkap.</p>
+</section>
+
+<!-- VOICE -->
+<section class="card" aria-labelledby="h-voice">
+  <h2 id="h-voice">Suara pembaca</h2>
+  <div class="seg" role="group" aria-label="Sumber suara">
+    <button class="btn" id="tpGtts" aria-pressed="false" onclick="setTtsProvider('gtts')">
+      Google<span class="s2">gratis</span>
+    </button>
+    <button class="btn" id="tpOpenai" aria-pressed="false" onclick="setTtsProvider('openai')">
+      OpenAI<span class="s2">lebih stabil</span>
+    </button>
+  </div>
+  <div id="voiceWrap" hidden>
+    <div class="sgrid vgrid" role="group" aria-label="Pilihan suara OpenAI" id="voiceSeg"></div>
+    <p class="hint">Tekan sebuah suara untuk <span class="role">mendengarkan contohnya</span> — belum tersimpan. Tekan <span class="role">Pakai suara ini</span> untuk menyimpan.</p>
+    <div class="sgrid">
+      <button class="btn" id="bVoiceSave" onclick="saveVoice()" disabled>Pakai suara ini</button>
+      <button class="btn btn--ghost" id="bVoiceTest" onclick="testVoice(null)">Coba suara aktif</button>
+    </div>
+  </div>
+  <p class="hint" id="hVoice"></p>
 </section>
 
 <!-- BOOT MODE -->
@@ -398,23 +437,27 @@ function logLine(msg, cls){
   box.scrollTop = box.scrollHeight;
 }
 
-// ── POST /config helper (token + bootstrap retry) ────────────────────────────
-async function postConfig(body){
+// ── authed POST helper (token + bootstrap retry) ─────────────────────────────
+async function postAuthed(path, body, timeout){
   const h = {'Content-Type':'application/json'};
   if (TOKEN) h['X-Auth-Token'] = TOKEN;
   const payload = JSON.stringify(body);
-  let r = await tfetch('/config', {method:'POST', headers:h, body:payload}, 4000);
+  const ms = timeout || 4000;
+  let r = await tfetch(path, {method:'POST', headers:h, body:payload}, ms);
   if (r.status === 401){
     await initToken();
-    if (TOKEN){ h['X-Auth-Token'] = TOKEN; r = await tfetch('/config',{method:'POST',headers:h,body:payload},4000); }
+    if (TOKEN){ h['X-Auth-Token'] = TOKEN; r = await tfetch(path,{method:'POST',headers:h,body:payload},ms); }
   }
   return r;
 }
+async function postConfig(body){ return postAuthed('/config', body); }
 
 // ── simulated hardware press → POST /button (open, no auth) ───────────────────
 async function press(which, long, el){
   if (el){ el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); }
-  logLine(`${which.toUpperCase()} ${long?'(tekan lama)':'(tekan)'}`);
+  logLine(which === 'chord'
+    ? 'MODE + ACTION (tahan bersamaan) — mode volume'
+    : `${which.toUpperCase()} ${long?'(tekan lama)':'(tekan)'}`);
   try{
     const r = await tfetch('/button', {
       method:'POST', headers:{'Content-Type':'application/json'},
@@ -457,6 +500,10 @@ async function cmd(c, extra){
 // writes changes via POST /config. Uses discrete −/+ buttons (large tap targets,
 // screen-reader friendly) instead of a raw slider. 0 is a valid mute.
 let curVol = null;
+// Volume can now move from either end — these buttons or the device's own
+// (hold MODE + ACTION). The poll below follows the device, except right after
+// a tap here, when an in-flight poll would otherwise snap the number back.
+let volEditingUntil = 0;
 function renderVol(){
   $('volVal').textContent = (curVol == null) ? '—' : curVol + '%';
   const dis = (curVol == null);
@@ -475,6 +522,7 @@ async function nudgeVol(delta){
   const next = Math.max(0, Math.min(100, curVol + delta));
   if (next === curVol){ renderVol(); return; }
   curVol = next; renderVol();
+  volEditingUntil = Date.now() + 2500;   // don't let a slow poll undo the tap
   logLine('volume: ' + curVol + '%');
   try{
     const r = await postConfig({audio_volume: curVol});
@@ -530,6 +578,83 @@ async function setVerbosity(v){
     const d = await r.json().catch(()=>({}));
     if (d.ok) logLine('   ✓ deskripsi: ' + v + ' (aktif)', 'ok');
     else      logLine('   ✗ ' + (d.error || ('HTTP '+r.status)), 'err');
+  }catch(e){ logLine('   ✗ gagal (' + (e.name||e) + ')', 'err'); }
+}
+
+// ── voice ────────────────────────────────────────────────────────────────────
+// Every OpenAI voice reads Indonesian acceptably once the accent instruction is
+// applied, so which one to use is taste, not correctness — it belongs to
+// whoever listens to the device, not to a config file they cannot reach.
+const VOICES = ['alloy','nova','sage','coral','shimmer','echo'];
+let voicePending = null;      // auditioned but not yet saved
+let voiceActive  = 'alloy';
+let voiceEditingUntil = 0;
+
+function renderVoices(){
+  const seg = $('voiceSeg');
+  if (!seg || seg.childElementCount) return;    // build once
+  seg.innerHTML = VOICES.map(v =>
+    '<button class="btn" id="vc_' + v + '" aria-pressed="false" ' +
+    'onclick="testVoice('' + v + '')">' + v + '</button>').join('');
+}
+
+function applyVoice(){
+  const shown = voicePending || voiceActive;
+  VOICES.forEach(v => {
+    const el = $('vc_' + v);
+    if (el) el.setAttribute('aria-pressed', v === shown ? 'true' : 'false');
+  });
+  const save = $('bVoiceSave');
+  if (save){
+    save.disabled = !voicePending || voicePending === voiceActive;
+    save.textContent = voicePending && voicePending !== voiceActive
+      ? 'Pakai "' + voicePending + '"' : 'Pakai suara ini';
+  }
+}
+
+async function setTtsProvider(p){
+  logLine('suara pembaca: ' + (p === 'openai' ? 'OpenAI' : 'Google'));
+  voiceEditingUntil = Date.now() + 4000;
+  $('tpGtts').setAttribute('aria-pressed', p === 'gtts' ? 'true' : 'false');
+  $('tpOpenai').setAttribute('aria-pressed', p === 'openai' ? 'true' : 'false');
+  $('voiceWrap').hidden = (p !== 'openai');
+  try{
+    const r = await postConfig({tts_provider:p});
+    const d = await r.json().catch(()=>({}));
+    if (d.ok) logLine('   ✓ suara pembaca: ' + p, 'ok');
+    else      logLine('   ✗ ' + (d.error || ('HTTP '+r.status)), 'err');
+  }catch(e){ logLine('   ✗ gagal (' + (e.name||e) + ')', 'err'); }
+}
+
+// Auditions a voice WITHOUT saving it, so a candidate can be rejected without
+// ever having been the setting the device actually used.
+async function testVoice(v){
+  voiceEditingUntil = Date.now() + 8000;
+  if (v){ voicePending = v; applyVoice(); }
+  logLine('coba suara: ' + (v || voiceActive) + ' …');
+  try{
+    // Longer timeout than a config write: this one waits on a real render.
+    const r = await postAuthed('/tts-test', v ? {voice:v} : {}, 20000);
+    const d = await r.json().catch(()=>({}));
+    if (d.ok) logLine('   ✓ sedang diucapkan (' + d.voice + ')', 'ok');
+    else      logLine('   ✗ ' + (d.error || ('HTTP '+r.status)), 'err');
+  }catch(e){ logLine('   ✗ gagal (' + (e.name||e) + ')', 'err'); }
+}
+
+async function saveVoice(){
+  if (!voicePending) return;
+  const v = voicePending;
+  voiceEditingUntil = Date.now() + 4000;
+  logLine('simpan suara: ' + v);
+  try{
+    const r = await postConfig({tts_openai_voice:v});
+    const d = await r.json().catch(()=>({}));
+    if (d.ok){
+      voiceActive = v; voicePending = null; applyVoice();
+      logLine('   ✓ suara tersimpan: ' + v, 'ok');
+    } else {
+      logLine('   ✗ ' + (d.error || ('HTTP '+r.status)), 'err');
+    }
   }catch(e){ logLine('   ✗ gagal (' + (e.name||e) + ')', 'err'); }
 }
 
@@ -757,9 +882,31 @@ function applyState(s){
 
   applyBootMode((s.power && s.power.boot_mode) || 'idle');
 
+  if (typeof s.audio_volume === 'number' && Date.now() > volEditingUntil
+      && s.audio_volume !== curVol){
+    curVol = s.audio_volume; renderVol();
+  }
+
   const sv = s.scene_verbosity || 'detail';
   $('vSedang').setAttribute('aria-pressed', sv === 'sedang' ? 'true' : 'false');
   $('vDetail').setAttribute('aria-pressed', sv === 'detail' ? 'true' : 'false');
+
+  // voice — don't fight the user while they are auditioning
+  renderVoices();
+  if (Date.now() > voiceEditingUntil){
+    const tp = s.tts_provider || 'gtts';
+    $('tpGtts').setAttribute('aria-pressed', tp === 'gtts' ? 'true' : 'false');
+    $('tpOpenai').setAttribute('aria-pressed', tp === 'openai' ? 'true' : 'false');
+    $('voiceWrap').hidden = (tp !== 'openai');
+    voiceActive = s.tts_openai_voice || 'alloy';
+    if (voicePending === voiceActive) voicePending = null;
+    applyVoice();
+    $('hVoice').textContent = s.tts_openai_available === false
+      ? 'OpenAI butuh API key di menu Pengaturan AI.'
+      : (tp === 'openai'
+         ? 'Suara aktif: ' + voiceActive + '. Tanpa ffmpeg, jadi lebih cepat dan konsisten.'
+         : 'Google gratis, tapi waktunya berubah-ubah (2–9 detik).');
+  }
 
   // audio render mode + gap slider
   const cacheOn = (s.word_cache_enabled !== false);

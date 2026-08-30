@@ -7,11 +7,14 @@ Mode transitions
                           loads resources for the new one, plays a confirmation
                           audio cue. Can be called from any thread.
 
-Hardware button
-───────────────
+Hardware buttons
+────────────────
   If cfg.BUTTON_PIN_MODE >= 0, a dedicated thread monitors that GPIO pin and
   cycles through modes on each falling edge (press). Configure the pin number
-  in /root/config.json ("button_pin_mode": <N>).
+  in /root/config.json ("button_pin_mode": <N>). A second thread does the same
+  for BUTTON_PIN_ACTION (describe / repeat).
+
+  Holding BOTH together opens volume mode — see the volume section below.
 
 Watchdog
 ────────
@@ -180,12 +183,22 @@ class Orchestrator:
         self._ai_loop_stopped = threading.Event()
 
         # ── Hardware buttons (MODE + ACTION) ─────────────────────────────────────
+        # Chord state shared by the two listener threads: each one sees only
+        # its own pin, so "both held at once" — the gesture that opens volume
+        # mode — has to be assembled here rather than inside either loop.
+        self._btn_lock     = threading.Lock()
+        self._btn_down     = {}       # role -> monotonic ts of its falling edge
+        self._btn_consumed = set()    # roles whose release the chord already ate
+        self._volume_until = 0.0      # monotonic deadline; 0.0 = mode closed
+        self._volume_gen   = 0        # bumped per session; retires stale timers
+
         mode_pin = self._button_pin()
         if mode_pin:
-            self._start_button_listener(mode_pin, self._on_button)
+            self._start_button_listener(mode_pin, "mode", self._on_button)
         action_pin = self._action_pin()
         if action_pin:
-            self._start_button_listener(action_pin, self._on_action_button)
+            self._start_button_listener(action_pin, "action",
+                                        self._on_action_button)
 
         # ── Simulated buttons (web fallback for dead hardware buttons) ───────────
         # The companion web page can inject MODE/ACTION presses when the physical
@@ -345,11 +358,24 @@ class Orchestrator:
                 "latency":      dict(self._latency),
                 "audio_text":   audio_text,
                 "audio_mode":   cfg.get("audio_mode", "both"),
+                # Live volume: the device buttons can now change it (volume
+                # mode), so a page that only read it once at load would show a
+                # stale number for the rest of the session.
+                "audio_volume": cfg.AUDIO_VOLUME,
                 # White-label brand ("auralai" | "isora") — drives the /buttons
                 # UI name + which greeting audio set is active. Flipped via the
                 # hidden long-press on the logo (POST /brand).
                 "brand":        cfg.get("brand", "auralai"),
                 "scene_verbosity": cfg.get("scene_verbosity", "detail"),
+                # Which cloud voice reads descriptions, and (for openai) which
+                # one of its voices. "auto" is resolved here rather than in the
+                # UI so the page shows what the device will ACTUALLY use.
+                "tts_provider":     ("openai" if (
+                    str(cfg.get("tts_provider", "gtts")).lower() == "openai"
+                    or (str(cfg.get("tts_provider", "gtts")).lower() == "auto"
+                        and cfg.OPENAI_API_KEY)) else "gtts"),
+                "tts_openai_voice": cfg.get("tts_openai_voice", "alloy"),
+                "tts_openai_available": bool(cfg.OPENAI_API_KEY),
                 # Per-word audio cache: "caching per-kata" (True) vs "satu blok
                 # audio" (False), the inter-word gap (ms; <0 = overlap), the
                 # number of warmed words, and recent describe latency.
@@ -595,12 +621,18 @@ class Orchestrator:
         """ACTION button pad name, or None when disabled."""
         return self._pin_name("button_pin_action")
 
-    def _start_button_listener(self, pin: str, handler):
+    def _start_button_listener(self, pin: str, role: str, handler):
         """
         Monitor a button on GPIO `pin` (active-low to GND, internal pull-up) and
         call handler(long_press: bool) on each completed press.
 
         Long-press threshold is cfg.button_longpress_s (default 1.0s).
+
+        `role` ("mode" / "action") is what lets the two independent listener
+        threads see each other: every edge is published to the shared chord
+        state, and a hold that turns into a chord is swallowed here, so its
+        release cannot ALSO fire this button's own action (cycling the mode on
+        the way out of volume mode would be its own small disaster).
         """
         def _loop():
             try:
@@ -621,21 +653,29 @@ class Orchestrator:
                     v = btn.value()
                     if last == 1 and v == 0:        # falling edge = pressed
                         press_start = time.monotonic()
+                        self._note_button_down(role, press_start)
                     elif last == 0 and v == 1:      # rising edge = released
+                        eaten = self._note_button_up(role)
                         # Only fire if we actually observed the press. If the
                         # button was already held when the listener started
                         # (press_start is None), ignore this first release —
                         # otherwise dur is measured from a bogus start and fires
                         # a phantom long-press (e.g. dismissing onboarding).
-                        if press_start is not None:
+                        if press_start is not None and not eaten:
                             dur = time.monotonic() - press_start
                             long_press = dur >= cfg.get("button_longpress_s", 1.0)
                             handler(long_press)
                         press_start = None
                         time.sleep(0.05)            # debounce settle
+                    elif v == 0 and press_start is not None:
+                        # Still held — the other button may be held too.
+                        self._poll_chord()
                     last = v
                     time.sleep(0.02)
             except Exception as e:
+                # Leaving the loop with this button still marked down would let
+                # the OTHER button, held alone, satisfy the chord test forever.
+                self._note_button_up(role)
                 self.logger.warn(
                     f"GPIO button unavailable ({pin}): {e}",
                     module="Orchestrator",
@@ -644,6 +684,194 @@ class Orchestrator:
         threading.Thread(
             target=_loop, daemon=True, name=f"BtnListener-{pin}"
         ).start()
+
+    # ─── Volume mode (chord: MODE + ACTION held together) ─────────────────────
+    #
+    # Why a chord. All four gestures were already spoken for (short/long x
+    # MODE/ACTION) and none was free to take: long-press MODE is the only way a
+    # blind user rediscovers the web address after setup. A double-tap was the
+    # other candidate, but it taxes the gestures that stay — every short press
+    # would have to wait out the second-tap window before acting, making every
+    # describe and every mode switch slower to pay for a setting people touch
+    # once a week. Holding both buttons costs nothing that already works, and is
+    # close to impossible to strike by accident.
+    #
+    # Inside the mode MODE steps down and ACTION steps up, matching the - / +
+    # order the same two buttons sit in on the /buttons page. The confirmation
+    # chime is played AT the new volume, so the user hears the setting itself
+    # rather than a number they would have to turn into loudness in their head.
+
+    @staticmethod
+    def step_volume(current, direction, step=10, lo=20, hi=100) -> int:
+        """The volume one press moves to. Pure — the whole policy lives here.
+
+        Returning `current` unchanged is the signal for "that press moved
+        nothing", which the caller turns into the limit chime.
+
+        Below the floor (reachable only by writing audio_volume from the web UI
+        or the cloud push) a DOWN press is a no-op rather than a jump up onto
+        the floor: the user asked for quieter, and answering with louder is
+        worse than answering with nothing. UP from there lands on the floor, so
+        the buttons can always climb back out.
+        """
+        try:
+            cur = int(current)
+        except (TypeError, ValueError):
+            cur = 80
+        try:
+            step = max(1, int(step))
+        except (TypeError, ValueError):
+            step = 10
+        try:
+            lo, hi = max(0, min(100, int(lo))), max(0, min(100, int(hi)))
+        except (TypeError, ValueError):
+            lo, hi = 20, 100
+        if lo > hi:
+            lo, hi = hi, lo
+        cur = max(0, min(100, cur))
+        if direction > 0:
+            return min(hi, max(lo, cur + step))
+        if cur <= lo:
+            return cur
+        return max(lo, min(hi, cur - step))
+
+    def _note_button_down(self, role: str, ts: float):
+        with self._btn_lock:
+            self._btn_down[role] = ts
+            self._btn_consumed.discard(role)
+
+    def _note_button_up(self, role: str) -> bool:
+        """Release bookkeeping. True when the chord already ate this hold."""
+        with self._btn_lock:
+            self._btn_down.pop(role, None)
+            eaten = role in self._btn_consumed
+            self._btn_consumed.discard(role)
+            return eaten
+
+    def _poll_chord(self):
+        """Fire the chord once both buttons have been held together long enough.
+
+        Called from both listener threads on every poll while their own button
+        is down; the lock plus the consumed set make the two callers converge on
+        exactly one fire per hold.
+        """
+        try:
+            hold = float(cfg.get("button_chord_hold_s", 0.6))
+        except (TypeError, ValueError):
+            hold = 0.6
+        now = time.monotonic()
+        with self._btn_lock:
+            if len(self._btn_down) < 2 or self._btn_consumed:
+                return
+            # Measured from the LATER press: the gesture is "held together for
+            # hold seconds", not "one of them has been down that long" — nobody
+            # presses two buttons on the same millisecond.
+            if now - max(self._btn_down.values()) < hold:
+                return
+            self._btn_consumed = set(self._btn_down)
+        self._toggle_volume_mode()
+
+    def _in_volume_mode(self) -> bool:
+        with self._btn_lock:
+            return time.monotonic() < self._volume_until
+
+    def _volume_timeout_s(self) -> float:
+        try:
+            return max(1.0, float(cfg.get("volume_mode_timeout_s", 5.0)))
+        except (TypeError, ValueError):
+            return 5.0
+
+    def _toggle_volume_mode(self):
+        """The chord opens volume mode; the same chord closes it early."""
+        if self._in_volume_mode():
+            self._exit_volume_mode()
+        else:
+            self._enter_volume_mode()
+
+    def _enter_volume_mode(self):
+        timeout = self._volume_timeout_s()
+        with self._btn_lock:
+            self._volume_gen += 1
+            gen = self._volume_gen
+            self._volume_until = time.monotonic() + timeout
+        # Detection alerts would otherwise talk straight over every step chime.
+        self.note_user_interaction(timeout + 2.0)
+        if self.audio_manager:
+            self.audio_manager.user_barge_in("chime_vol_enter.wav")
+            # A modal state has to announce that it is modal. Without this a
+            # first-time user presses MODE, hears no mode change, and concludes
+            # the device is broken rather than that it is listening for volume.
+            self.audio_manager.queue_system("atur_volume")
+        self.logger.info(
+            f"Volume mode ON (chord) — volume {cfg.get('audio_volume')}",
+            module="Orchestrator",
+        )
+        threading.Thread(target=self._volume_mode_timer, args=(gen,),
+                         daemon=True, name="VolTimeout").start()
+
+    def _exit_volume_mode(self, gen: Optional[int] = None, quiet: bool = False):
+        """Close volume mode and persist the level. Idempotent."""
+        with self._btn_lock:
+            if self._volume_until <= 0.0:
+                return                      # already closed
+            if gen is not None and gen != self._volume_gen:
+                return                      # a newer session owns the mode
+            self._volume_until = 0.0
+        # One flash write per session instead of one per tap: cfg.set() already
+        # made each step audible (AudioManager re-reads audio_volume on every
+        # playback), so this save only has to survive a reboot.
+        cfg.save()
+        if not quiet and self.audio_manager:
+            self.audio_manager.queue_cue("chime_vol_exit.wav")
+        self.logger.info(
+            f"Volume mode OFF — volume {cfg.get('audio_volume')}",
+            module="Orchestrator",
+        )
+
+    def _volume_mode_timer(self, gen: int):
+        """Close the mode once the user stops adjusting.
+
+        Without a timeout the device would sit in a state the user has to
+        remember to leave, and a pocketed device would be one accidental press
+        away from silence.
+        """
+        while self._running:
+            with self._btn_lock:
+                if gen != self._volume_gen:
+                    return                  # superseded by a newer session
+                remaining = self._volume_until - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.25, remaining))
+        self._exit_volume_mode(gen)
+
+    def _volume_step(self, direction: int):
+        """One press inside volume mode: step, confirm, hold the mode open."""
+        cur = cfg.get("audio_volume", 80)
+        new = self.step_volume(
+            cur, direction,
+            step=cfg.get("volume_step", 10),
+            lo=cfg.get("volume_button_min", 20),
+            hi=cfg.get("volume_button_max", 100),
+        )
+        if new != cur:
+            # set(), not update(): the next playback reads cfg directly, so the
+            # step is audible at once; the disk write waits for the exit.
+            cfg.set("audio_volume", new)
+        # Still adjusting — push the idle timeout back.
+        timeout = self._volume_timeout_s()
+        with self._btn_lock:
+            if self._volume_until > 0.0:
+                self._volume_until = time.monotonic() + timeout
+        self.note_user_interaction(timeout + 2.0)
+        if self.audio_manager:
+            if new == cur:
+                cue = "chime_vol_limit.wav"
+            else:
+                cue = "chime_vol_up.wav" if direction > 0 else "chime_vol_down.wav"
+            # Barge in so rapid taps each land, cutting the previous tick short.
+            self.audio_manager.user_barge_in(cue)
+        self.logger.info(f"Volume {cur} -> {new}", module="Orchestrator")
 
     # ─── Simulated buttons (web UI) ───────────────────────────────────────────
 
@@ -654,8 +882,12 @@ class Orchestrator:
         request returns immediately even if the press triggers a slow NPU model
         reload. Returns False if `which` is invalid or the queue is saturated
         (the press is then dropped rather than allowed to back up → no hang).
+
+        "chord" stands in for both buttons held together (volume mode), which a
+        web page cannot express as two presses — and which is the only way to
+        reach volume mode on a unit whose physical buttons are dead.
         """
-        if which not in ("mode", "action"):
+        if which not in ("mode", "action", "chord"):
             return False
         try:
             self._sim_btn_q.put_nowait((which, bool(long_press)))
@@ -684,7 +916,9 @@ class Orchestrator:
                     f"Simulated {which.upper()} button ({kind} press)",
                     module="Orchestrator",
                 )
-                if which == "mode":
+                if which == "chord":
+                    self._toggle_volume_mode()
+                elif which == "mode":
                     self._on_button(long_press)
                 else:
                     self._on_action_button(long_press)
@@ -723,6 +957,12 @@ class Orchestrator:
 
     def _on_button(self, long_press: bool):
         """Route a completed MODE-button press based on onboarding state."""
+        # Volume mode owns both buttons while it is open, and answers with its
+        # own cue — so this returns before the generic press chime, which would
+        # otherwise play at the OLD volume and muddle the level being judged.
+        if self._in_volume_mode():
+            self._volume_step(-1)                     # MODE = quieter
+            return
         self._press_cue()
         onboarding_active = (
             not cfg.get("setup_completed", False)
@@ -749,8 +989,12 @@ class Orchestrator:
           short → describe scene (explorer/context) or scan QRIS (qris mode)
           long  → re-speak the last result the user heard
 
-        Inert during onboarding to avoid confusing first-boot.
+        Inert during onboarding to avoid confusing first-boot; steps the volume
+        up instead while volume mode is open.
         """
+        if self._in_volume_mode():
+            self._volume_step(+1)                     # ACTION = louder
+            return
         self._press_cue()
         onboarding_active = (
             not cfg.get("setup_completed", False)
@@ -1117,6 +1361,11 @@ class Orchestrator:
     def stop(self):
         self._running = False
         self._mode_event.set()   # unblock any waiting loop
+        # Persist a volume the user was mid-way through setting: the steps live
+        # in memory until the mode closes, and a shutdown here would otherwise
+        # throw them away. quiet=True — nobody needs an exit chime on the way
+        # down, and the audio manager is about to stop anyway.
+        self._exit_volume_mode(quiet=True)
         if self.audio_manager:
             self.audio_manager.stop()
         # Wait for the AI loop to leave its body BEFORE touching anything that
