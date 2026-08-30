@@ -18,7 +18,52 @@ _API_URL = "https://api.openai.com/v1/responses"
 
 # Allowed reasoning.effort values (low -> high); "none" skips reasoning
 # entirely on models that support it. Anything else falls back to "low".
-_VALID_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
+#
+# This set is the union across model families, NOT a per-model guarantee:
+# gpt-5.6-terra answers effort="minimal" with HTTP 400 ("Unsupported value:
+# 'minimal' is not supported with the 'gpt-5.6-terra' model"), measured on
+# aural-bfe2. Passing this filter is therefore not proof the API will accept
+# the value — see the retry in _call, which is what actually keeps a mismatch
+# from turning every describe press into "gagal menganalisis".
+_VALID_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+
+# Only the reasoning series accepts a `reasoning` block on /v1/responses;
+# sending one to gpt-4o / gpt-4-turbo is rejected with HTTP 400. This has to be
+# decided per-model rather than assumed from the default: Config._load merges
+# the saved file OVER _DEFAULTS, so a unit provisioned before the gpt-5.6
+# default still carries openai_model="gpt-4o-mini" in /root/config.json and
+# would 400 on every describe/QRIS press after an update.
+_REASONING_PREFIXES = ("gpt-5", "gpt-6", "o1", "o3", "o4")
+
+# Reasoning tokens are billed against max_output_tokens, so a tight cap can be
+# consumed entirely by thinking — the response then completes as
+# status="incomplete" with only a reasoning item and no message, and
+# _extract_text raises. Headroom must scale with effort: a flat +512 covers
+# "low" but not the "high"/"xhigh" that _VALID_EFFORTS accepts and that
+# POST /config (and the cloud config push) can set live.
+_EFFORT_HEADROOM = {
+    "none":    0,
+    "minimal": 0,
+    "low":     512,
+    "medium":  1024,
+    "high":    2048,
+    "xhigh":   3072,
+    "max":     4096,
+}
+
+
+class _EffortRejected(Exception):
+    """The model refused this reasoning.effort value — retryable without it."""
+
+
+def _is_effort_rejection(body: str) -> bool:
+    low = (body or "").lower()
+    return "unsupported value" in low and "not supported with" in low
+
+
+def _is_reasoning_model(model: str) -> bool:
+    m = (model or "").strip().lower()
+    return any(m.startswith(p) for p in _REASONING_PREFIXES)
 
 
 class OpenAIAdapter(AIAdapter):
@@ -36,7 +81,7 @@ class OpenAIAdapter(AIAdapter):
         effort  = str(self._cfg.get("openai_reasoning_effort", "low")).lower()
         if effort not in _VALID_EFFORTS:
             effort = "low"
-        timeout = int(self._cfg.get("ai_timeout_s", 15))
+        timeout = self._cfg.AI_TIMEOUT_S
 
         content: list = [{"type": "input_text", "text": prompt}]
         if jpeg_bytes:
@@ -46,20 +91,43 @@ class OpenAIAdapter(AIAdapter):
                 "image_url": f"data:image/jpeg;base64,{b64}",
             })
 
-        # The Responses API bills reasoning tokens against max_output_tokens, so
-        # a tight cap can be fully consumed by reasoning — the response then
-        # completes as status="incomplete" with only a reasoning item and no
-        # message, and _extract_text raises. Add headroom whenever reasoning is
-        # active so the visible answer (and the tiny test_connection reply) still
-        # fits after the model finishes thinking.
-        out_cap = max_tokens if effort in ("none", "minimal") else max_tokens + 512
+        # Leave room for the visible answer to land after the model finishes
+        # thinking (see _EFFORT_HEADROOM). A non-reasoning model gets neither
+        # the headroom it doesn't need nor the `reasoning` block it rejects.
+        reasoning = _is_reasoning_model(model)
+        out_cap   = max_tokens + (_EFFORT_HEADROOM.get(effort, 512) if reasoning else 0)
         payload = {
             "model":             model,
             "input":             [{"role": "user", "content": content}],
             "max_output_tokens": out_cap,
-            "reasoning":         {"effort": effort},
         }
+        if reasoning:
+            payload["reasoning"] = {"effort": effort}
+        else:
+            # Pressing describe twice on an unchanged scene should not re-word
+            # the world (see utils/scene_prompt.py), so decoding is pinned to
+            # cfg["ai_temperature"] (0.0 by default). Reasoning models reject
+            # `temperature` on /v1/responses with HTTP 400 — "Unsupported
+            # parameter" — so they are left to the prompt's output contract
+            # plus the low reasoning effort instead.
+            payload["temperature"] = self._cfg.AI_TEMPERATURE
 
+        try:
+            return self._post(payload, key, timeout)
+        except _EffortRejected as e:
+            # The effort value passed _VALID_EFFORTS but this particular model
+            # does not take it (gpt-5.6-terra rejects "minimal"). Retrying
+            # without the block lets the model use its own default effort: a
+            # slower answer, but an answer. The alternative is every describe
+            # press failing with "gagal menganalisis" until someone SSHes in.
+            payload.pop("reasoning", None)
+            payload["max_output_tokens"] = max_tokens + _EFFORT_HEADROOM["medium"]
+            try:
+                return self._post(payload, key, timeout)
+            except _EffortRejected:
+                raise AdapterError(str(e)) from e
+
+    def _post(self, payload: dict, key: str, timeout: float) -> str:
         req = urllib.request.Request(
             _API_URL,
             data=json.dumps(payload).encode(),
@@ -75,6 +143,8 @@ class OpenAIAdapter(AIAdapter):
             return _extract_text(data)
         except urllib.error.HTTPError as e:
             body = e.read().decode(errors="replace")[:200]
+            if e.code == 400 and _is_effort_rejection(body):
+                raise _EffortRejected(f"OpenAI HTTP 400: {body}") from e
             raise AdapterError(f"OpenAI HTTP {e.code}: {body}") from e
         except Exception as e:
             raise AdapterError(str(e)) from e

@@ -974,6 +974,30 @@ class AuralAIHandler(BaseHTTPRequestHandler):
                     "allowed": ["sedang", "detail"],
                 }, 400)
                 return
+            # Which cloud voice renders free-form speech. Rejected rather than
+            # coerced for the same reason as boot_mode: a typo falling back to
+            # the slow backend looks exactly like "the setting does nothing".
+            if "tts_provider" in data and data["tts_provider"] not in ("auto", "gtts", "openai"):
+                self._send_json({
+                    "error": "invalid tts_provider",
+                    "allowed": ["auto", "gtts", "openai"],
+                    "hint": "auto = openai kalau ada API key, kalau tidak gtts",
+                }, 400)
+                return
+            # Vision sampling temperature. Clamped rather than rejected: the
+            # same key also arrives via the cloud config push, which does no
+            # validation, and every provider answers an out-of-range value with
+            # an HTTP 400 — a describe press that just says "gagal menganalisis".
+            if "ai_temperature" in data:
+                try:
+                    temp = float(data["ai_temperature"])
+                except (TypeError, ValueError):
+                    self._send_json({
+                        "error": "invalid ai_temperature",
+                        "hint":  "kirim angka 0.0 - 2.0 (0 = jawaban paling konsisten)",
+                    }, 400)
+                    return
+                data["ai_temperature"] = max(0.0, min(2.0, temp))
             # Per-word audio cache toggle ("caching per-kata" vs "satu blok audio").
             if "word_cache_enabled" in data:
                 data["word_cache_enabled"] = bool(data["word_cache_enabled"])

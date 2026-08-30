@@ -8,6 +8,8 @@ import json
 import threading
 from pathlib import Path
 
+from utils import scene_prompt
+
 _CONFIG_PATH = Path("/root/config.json")
 
 _DEFAULTS: dict = {
@@ -102,24 +104,30 @@ _DEFAULTS: dict = {
     # Claude (Anthropic)
     "claude_api_key":           "",
     "claude_model":             "claude-haiku-4-5-20251001",
+    # Sampling temperature for the vision call. 0.0 = as deterministic as the
+    # provider allows, which is what a describe button wants: pressing it twice
+    # on an unchanged scene should not produce a re-worded world. Reasoning
+    # models (gpt-5.6 and friends) reject the parameter outright, so the
+    # OpenAI adapter drops it there and the prompt's output contract carries
+    # the consistency on its own — see utils/scene_prompt.py.
+    "ai_temperature":           0.0,
     # Prompts (runtime-editable)
     # Context-mode scene description. Two verbosity levels, switchable live from
     # the /buttons UI via `scene_verbosity` ("sedang" | "detail"). "detail" is
     # the long, complete description; "sedang" is one short, consistent sentence
     # — far faster to synthesize/play and far more likely to hit the per-word
     # cache (so it gets instant as the vocabulary warms).
+    #
+    # Both defaults come from utils/scene_prompt.py, which documents WHY they
+    # are long: a flat one-liner gave a re-worded answer on every press,
+    # described the wall behind a held banknote, and produced the same generic
+    # "ada meja dan kursi" in a lab, a lecture hall and a pavement.
     "scene_verbosity": "detail",
-    "prompt_scene": (
-        "Deskripsikan scene ini secara singkat dalam Bahasa Indonesia, "
-        "fokus pada objek yang relevan untuk pengguna tunanetra. "
-        "Maksimal 2 kalimat."
-    ),
-    "prompt_scene_sedang": (
-        "Sebutkan maksimal tiga objek terpenting di depan pengguna tunanetra "
-        "beserta posisinya (kiri, kanan, atau depan), dalam SATU kalimat "
-        "Bahasa Indonesia yang singkat, maksimal dua belas kata. Pakai kata "
-        "yang sederhana dan konsisten. Jangan memberi deskripsi panjang."
-    ),
+    "prompt_scene":         scene_prompt.SCENE_PROMPT_DETAIL,
+    "prompt_scene_sedang":  scene_prompt.SCENE_PROMPT_SEDANG,
+    # Which prompt pack generation the stored config was written by. Devices
+    # provisioned before a pack bump get migrated on load (migrate_prompt_pack).
+    "prompt_pack_version":  scene_prompt.PROMPT_PACK_VERSION,
     "prompt_qris": (
         "Baca kode QRIS ini. Sebutkan: nama merchant dan nominal jika ada. "
         "Format: MERCHANT: [nama], NOMINAL: [angka]. "
@@ -197,6 +205,26 @@ _DEFAULTS: dict = {
     # TTS hybrid: synthesize dynamic text via gTTS and cache on device
     "tts_enabled":              True,
     "tts_cache_dir":            "/root/audio/tts_cache",
+    # Which cloud voice renders free-form speech (scene descriptions, QRIS
+    # results). "auto" = openai when a key is configured, else gtts.
+    #
+    # DEFAULT IS gtts, on accent, not on speed. OpenAI's /v1/audio/speech is the
+    # faster path on paper — it answers in raw PCM, so nothing has to be decoded
+    # by ffmpeg (a flat 1.2-1.8 s per sentence on this board) — but its voices
+    # read Indonesian with an audible English accent, which for a user who only
+    # has the audio is a worse trade than a second of latency. Set "openai" only
+    # with tts_openai_model="gpt-4o-mini-tts" and a tts_openai_instructions that
+    # pins the accent, and listen to it before leaving it on.
+    "tts_provider":             "gtts",   # "auto" | "gtts" | "openai"
+    "tts_openai_model":         "gpt-4o-mini-tts",
+    "tts_openai_voice":         "alloy",
+    # Only gpt-4o-mini-tts honours this; tts-1/tts-1-hd ignore it.
+    "tts_openai_instructions":  ("Bacakan dalam Bahasa Indonesia dengan logat "
+                                 "Indonesia yang natural, tenang, dan jelas. "
+                                 "Jangan memakai aksen Inggris."),
+    "tts_openai_timeout_s":     15.0,
+    # How long to wait on one gTTS render before giving up on it.
+    "tts_gtts_timeout_s":       20.0,
     # Per-word TTS cache (context mode). Scene sentences are near-unique but
     # reuse a small Indonesian vocabulary, so caching audio per word lets a
     # fully-seen sentence play with zero network. A missing word never drops a
@@ -220,6 +248,11 @@ _DEFAULTS: dict = {
     "word_cache_trim_margin_ms": 8,    # keep this much real audio around the signal
     "word_warm_per_call":       8,     # words warmed (gTTS) per describe (gentle on the 1-core box)
     "word_warm_gap_s":          0.5,   # pause between background warms (avoid load spikes)
+    # Sentence chunks a scene description is streamed in. gTTS time scales with
+    # text length (measured on-device: 155 chars -> 5.3 s, 89 chars -> 1.8 s),
+    # so speaking the first sentence while the rest still synthesizes cuts the
+    # silence after the chime roughly in half. 1 disables streaming.
+    "scene_stream_chunks":      3,
     # I2C battery HAT: enabled only after manual probe via /i2c-probe endpoint
     "i2c_battery_enabled":      False,
     # Companion redesign (handoff §4.3) — audio playback preference
@@ -296,6 +329,38 @@ def select_scene_prompt(verbosity: str, sedang: str, detail: str) -> str:
     return sedang if verbosity == "sedang" else detail
 
 
+def migrate_prompt_pack(data: dict) -> dict:
+    """Return the keys that must change so `data` carries the current prompts.
+
+    Config._load merges the saved file OVER _DEFAULTS, so a unit provisioned
+    before a prompt-pack bump keeps its old prompt forever — a new default is
+    otherwise invisible in the field, which is exactly how the pilot units
+    ended up still running the flat one-line prompt long after it was replaced
+    in the repo. Same trap the openai adapter documents for openai_model.
+
+    Only prompts this project itself shipped are replaced (scene_prompt's
+    legacy tables). A prompt the operator wrote in the dashboard is left
+    untouched no matter how old the pack version is — their edit outranks our
+    default, and silently reverting it would look like the field simply does
+    not save.
+
+    Returns {} when nothing needs to change, so the caller can skip the write.
+    """
+    try:
+        stored_ver = int(data.get("prompt_pack_version", 0))
+    except (TypeError, ValueError):
+        stored_ver = 0
+    if stored_ver >= scene_prompt.PROMPT_PACK_VERSION:
+        return {}
+
+    changes: dict = {"prompt_pack_version": scene_prompt.PROMPT_PACK_VERSION}
+    if scene_prompt.is_legacy_scene_prompt(data.get("prompt_scene", "")):
+        changes["prompt_scene"] = scene_prompt.SCENE_PROMPT_DETAIL
+    if scene_prompt.is_legacy_sedang_prompt(data.get("prompt_scene_sedang", "")):
+        changes["prompt_scene_sedang"] = scene_prompt.SCENE_PROMPT_SEDANG
+    return changes
+
+
 class Config:
     """
     Thread-safe configuration backed by /root/config.json.
@@ -313,8 +378,18 @@ class Config:
         try:
             with open(_CONFIG_PATH) as f:
                 loaded = json.load(f)
+            # Migrate off `loaded`, NOT off the merged dict: _DEFAULTS already
+            # carries the current prompt_pack_version, so a merged dict always
+            # looks up to date and every stale unit in the field would keep its
+            # old prompt forever — the exact failure the migration exists to fix.
+            changes = migrate_prompt_pack(loaded)
             with self._lock:
                 self._data.update(loaded)
+                self._data.update(changes)
+            # Persist outside the lock — save() takes it again, and a prompt
+            # migration that only lived in RAM would re-run on every boot.
+            if changes:
+                self.save()
         except FileNotFoundError:
             self._write_defaults()
         except Exception:
@@ -566,6 +641,22 @@ class Config:
             return 80
         return max(0, min(100, vol))
 
+
+    @property
+    def AI_TEMPERATURE(self) -> float:
+        """Sampling temperature for the vision call, clamped to 0.0-2.0.
+
+        Clamped at the READ site as well as in POST /config: the cloud config
+        push writes straight into cfg with no validation, and a junk value here
+        would be sent verbatim to three different provider APIs — each of which
+        answers a bad temperature with an HTTP 400, i.e. a describe press that
+        fails with "gagal menganalisis" and no hint why.
+        """
+        try:
+            t = float(self.get("ai_temperature", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+        return max(0.0, min(2.0, t))
 
     @property
     def PROMPT_SCENE(self) -> str:
