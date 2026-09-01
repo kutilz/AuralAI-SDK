@@ -459,10 +459,15 @@ async function press(which, long, el){
     ? 'MODE + ACTION (tahan bersamaan) — mode volume'
     : `${which.toUpperCase()} ${long?'(tekan lama)':'(tekan)'}`);
   try{
+    // 15s, not 4s. The device holds the GIL for seconds at a time during a
+    // camera open or an NPU model load, so /button was measured at a p95 of
+    // 7.25s under a mash — well past the old 4s abort. The press had actually
+    // been accepted; only this page gave up early and told the caregiver it
+    // had failed, so they pressed again and again, making the queue worse.
     const r = await tfetch('/button', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({button:which, long:!!long})
-    }, 4000);
+    }, 15000);
     const d = await r.json().catch(()=>({}));
     if (d.ok) logLine('   ✓ terkirim ke perangkat', 'ok');
     else      logLine('   ✗ ' + (d.error || 'antrean penuh, ulangi'), 'err');

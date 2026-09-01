@@ -28,24 +28,48 @@ from utils.scene_metrics import scene_metrics
 from adapters import get_adapter, AdapterError
 
 
-# Signatures of a *connectivity* failure (DNS / route / timeout / refused) as
-# opposed to a server-side or app error. urllib surfaces these inside the
-# AdapterError message, e.g. "<urlopen error [Errno -2] Name or service not
-# known>" or "<urlopen error timed out>". We use this to speak an honest
-# "tidak ada koneksi internet" cue instead of a generic failure. HTTP status
-# errors (e.g. "Gemini HTTP 429") intentionally do NOT match — there the network
-# is fine, the API just rejected the request.
-_NET_ERR_SIGNS = (
-    "urlopen error", "getaddrinfo", "name or service not known",
-    "temporary failure in name resolution", "timed out", "timeout",
-    "connection refused", "network is unreachable", "no route to host",
-    "connection reset", "connection aborted", "[errno -2]", "[errno -3]",
+# Signatures of a connectivity failure, split by what the user should actually
+# DO about it. urllib surfaces these inside the AdapterError message, e.g.
+# "<urlopen error [Errno -2] Name or service not known>" or "<urlopen error
+# timed out>". HTTP status errors ("OpenAI HTTP 429") intentionally match
+# neither — there the network is fine, the API just rejected the request.
+#
+# The distinction matters: a timeout on a working-but-slow phone hotspot used
+# to be announced as "tidak ada koneksi", which is simply false and sends the
+# user off to check a connection that was never down. A timeout means the link
+# is there and too slow — "koneksi lambat", try again — and only an unreachable
+# name/route/port means there is no connection at all.
+_NET_DOWN_SIGNS = (
+    "getaddrinfo", "name or service not known",
+    "temporary failure in name resolution", "connection refused",
+    "network is unreachable", "no route to host", "[errno -2]", "[errno -3]",
+)
+_NET_SLOW_SIGNS = (
+    "timed out", "timeout", "connection reset", "connection aborted",
+    "incompleteread", "connection broken",
 )
 
 
-def _is_network_error(exc) -> bool:
+def _net_failure_kind(exc):
+    """"down" | "slow" | None — which spoken cue this failure has earned."""
     s = str(exc).lower()
-    return any(sign in s for sign in _NET_ERR_SIGNS)
+    if any(sign in s for sign in _NET_DOWN_SIGNS):
+        return "down"
+    if any(sign in s for sign in _NET_SLOW_SIGNS):
+        return "slow"
+    # A bare "urlopen error" with nothing more specific: the request never got
+    # a reply, so the honest reading is "the link is not carrying us", which is
+    # the slow cue, not a claim that the network is missing.
+    return "slow" if "urlopen error" in s else None
+
+
+def _net_failure_cue(exc, fallback: str) -> str:
+    kind = _net_failure_kind(exc)
+    if kind == "down":
+        return "tidak_ada_koneksi"
+    if kind == "slow":
+        return "koneksi_lambat"
+    return fallback
 
 
 class AIEngine:
@@ -58,7 +82,11 @@ class AIEngine:
         self._detector:     object = None
         self._model_loaded: bool   = False
         self._last_frame:   object = None
-        self._lock = threading.Lock()
+        # RLock, not Lock: release() now holds the lock across release_model()
+        # so a model teardown and a camera close can never be split by another
+        # thread's reload_model(). Both take the same lock, so it must be
+        # re-entrant. See the freeze analysis on _init_model below.
+        self._lock = threading.RLock()
 
         # Gentle camera recovery: when the camera is down, retry at most once
         # per interval instead of letting the watchdog hammer reload() every
@@ -167,17 +195,37 @@ class AIEngine:
         )
 
     def _init_model(self):
+        """Load the NPU model. HOLDS _lock across the allocation.
+
+        The lock is not optional here. The allocation is a .mud parse plus an
+        NPU/ION reservation inside a C call, and the same object's release()
+        path closes the camera under the same lock. With the allocation left
+        outside the lock, a mode press could start a load while the AI thread
+        was tearing the engine down: the two C calls interleaved on one core
+        and the process wedged, holding the GIL, with nothing left able to run
+        (measured in the field — 24 loads against 20 releases over 92 mode
+        switches, then a hard freeze).
+
+        The publish of _detector/_model_loaded is under the same lock as the
+        reader in capture_and_infer, so a half-constructed detector is never
+        visible: previously the two fields could be written in either order
+        relative to the reader, leaving explorer mode silently blind.
+        """
         if not MAIX_AVAILABLE:
             self.logger.warn("MaixPy unavailable — model skipped", module="AIEngine")
             return
-        try:
-            cls, cls_name      = self._detector_class(cfg.MODEL_PATH)
-            self._detector     = cls(model=cfg.MODEL_PATH)
+        with self._lock:
+            try:
+                cls, cls_name  = self._detector_class(cfg.MODEL_PATH)
+                detector       = cls(model=cfg.MODEL_PATH)
+            except Exception as e:
+                self._detector     = None
+                self._model_loaded = False
+                self.logger.error(f"Model load failed: {e}", module="AIEngine")
+                return
+            self._detector     = detector
             self._model_loaded = True
             self.logger.ok(f"{cls_name} loaded: {cfg.MODEL_PATH}", module="AIEngine")
-        except Exception as e:
-            self.logger.error(f"Model load failed: {e}", module="AIEngine")
-            self._model_loaded = False
 
     @staticmethod
     def _detector_class(model_path):
@@ -225,16 +273,29 @@ class AIEngine:
                 self.logger.info("YOLO model released (NPU free)", module="AIEngine")
 
     def reload_model(self):
-        """Reload YOLO. No-op if already loaded."""
+        """Reload YOLO. No-op if already loaded.
+
+        The check and the load are ONE critical section. Splitting them let two
+        callers both see "not loaded" and both allocate, and let a load start
+        while release() was closing the camera.
+        """
         with self._lock:
             if self._model_loaded:
                 return
-        self._init_model()
+            self._init_model()
 
     def release(self):
-        """Full teardown — camera + model. Called before watchdog restart."""
-        self.release_model()
+        """Full teardown — camera + model. Called before watchdog restart.
+
+        One lock span for the whole teardown: a reload_model() arriving from a
+        button thread mid-release used to slip between the model drop and the
+        camera close and allocate into an engine the orchestrator had already
+        let go of — an NPU allocation nobody held a reference to, leaked until
+        reboot. On a 128MB swapless board that leak is what turned a survivable
+        mode-mash into a probabilistic hard freeze.
+        """
         with self._lock:
+            self.release_model()
             if self._cam is not None:
                 try:
                     self._cam.close()
@@ -617,17 +678,16 @@ class AIEngine:
         except AdapterError as e:
             self.logger.error(f"AI adapter error: {e}", module="AIEngine")
             am.queue_cue("chime_error.wav")
-            # Distinguish "no internet" from other failures so the user knows
-            # whether to check their connection or just retry.
-            am.queue_system("tidak_ada_koneksi" if _is_network_error(e)
-                            else "gagal_menganalisis")
+            # Say which of the three it actually was — no connection, a
+            # connection too slow to finish in time, or a failure on the far
+            # end — so the user knows whether to move, wait, or just retry.
+            am.queue_system(_net_failure_cue(e, "gagal_menganalisis"))
         except Exception as e:
             self.logger.exception(
                 f"Unexpected adapter error: {e}", module="AIEngine", exc=e,
             )
             am.queue_cue("chime_error.wav")
-            am.queue_system("tidak_ada_koneksi" if _is_network_error(e)
-                            else "gagal_menganalisis")
+            am.queue_system(_net_failure_cue(e, "gagal_menganalisis"))
 
     def trigger_qris_scan(self):
         """
@@ -703,13 +763,17 @@ class AIEngine:
         except AdapterError as e:
             self.logger.error(f"AI adapter error: {e}", module="AIEngine")
             self.orch.audio_manager.queue_cue("chime_error.wav")
-            self.orch.audio_manager.queue_system("gagal_memindai")
+            # Same distinction as a scene describe: "gagal memindai" tells the
+            # user to re-aim at the QR when the real problem was the link.
+            self.orch.audio_manager.queue_system(
+                _net_failure_cue(e, "gagal_memindai"))
         except Exception as e:
             self.logger.exception(
                 f"Unexpected adapter error: {e}", module="AIEngine", exc=e,
             )
             self.orch.audio_manager.queue_cue("chime_error.wav")
-            self.orch.audio_manager.queue_system("gagal_memindai")
+            self.orch.audio_manager.queue_system(
+                _net_failure_cue(e, "gagal_memindai"))
 
     def _qris_hybrid(self, jpeg: bytes):
         # 1) local decode (fast, offline)

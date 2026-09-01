@@ -52,9 +52,18 @@ def _get(cfg, key):
     return v if v is not None else _DEFAULTS[key]
 
 
-def _is_danger(det) -> bool:
-    """A detection is 'urgent' if flagged is_danger or it sits in the near tier."""
+def is_danger(det) -> bool:
+    """A detection is 'urgent' if flagged is_danger or it sits in the near tier.
+
+    Public because the urgency test is not only this module's business: the
+    explorer tick needs the same definition to decide what may still be spoken
+    while ordinary detection audio is muted (see modes/explorer_mode.py).
+    """
     return bool(det.get("is_danger")) or det.get("tier") == "near"
+
+
+# Historical private name, kept so nothing in-tree breaks on the rename.
+_is_danger = is_danger
 
 
 def decide(state, detections, now, cfg=None, force=False):

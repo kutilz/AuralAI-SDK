@@ -35,6 +35,15 @@ from typing import Optional
 from config import cfg
 from utils.power import PowerGovernor, pace_delay
 
+# Contact-bounce settle applied to BOTH button edges (seconds).
+_BTN_DEBOUNCE_S = 0.05
+
+# A gap between two GPIO polls larger than this means the listener thread was
+# not scheduled — the poll loop paces itself at 20ms, so the only thing that
+# produces a gap this size is a C call holding the GIL (camera open, NPU load).
+# Press durations measured across such a gap are not real; see the listener.
+_BTN_STALL_S = 0.25
+
 
 class Orchestrator:
 
@@ -172,6 +181,19 @@ class Orchestrator:
 
         # ── Mode-change event (wakes AI loop when mode switches) ──────────────
         self._mode_event = threading.Event()
+
+        # Monotonic timestamp of the last AI-loop iteration, set unconditionally
+        # every tick (see run_ai_loop). The hardware watchdog in main.py only
+        # pets /dev/watchdog while this is fresh, so a wedged or dead loop lets
+        # the SoC reset the board instead of leaving a blind user with a device
+        # that loops one phrase forever. Plain float write/read: atomic under
+        # the GIL, and a torn value is impossible.
+        self._loop_beat = time.monotonic()
+
+        # Set by the Watchdog thread, acted on by the AI loop. See
+        # _request_engine_restart for why the watchdog may not do the work
+        # itself: it would put a second thread into the cvitek VI path.
+        self._engine_restart_requested = False
 
         # ── Mode Ambil Data: set once the AI loop has released the aural camera
         # and the device is idling in collection mode (camera free for capture).
@@ -362,6 +384,13 @@ class Orchestrator:
                 # mode), so a page that only read it once at load would show a
                 # stale number for the rest of the session.
                 "audio_volume": cfg.AUDIO_VOLUME,
+                # Whether the MODE/ACTION buttons are currently bound to volume
+                # instead of mode/describe. Nothing used to report this, so a
+                # caregiver watching the dashboard saw presses "do nothing" and
+                # had no way to know the device was in a modal state — and the
+                # web chord is a blind toggle, so their mental model could be
+                # exactly inverted from the device's.
+                "volume_mode":  self._in_volume_mode(),
                 # White-label brand ("auralai" | "isora") — drives the /buttons
                 # UI name + which greeting audio set is active. Flipped via the
                 # hidden long-press on the logo (POST /brand).
@@ -574,20 +603,31 @@ class Orchestrator:
             transition=f"{old_mode}→{new_mode}",
         )
 
-        # Release NPU model when leaving explorer mode
-        if old_mode in self._YOLO_MODES and new_mode not in self._YOLO_MODES:
-            if self.ai_engine:
-                self.ai_engine.release_model()
-
-        # Reload NPU model when returning to explorer mode
-        if new_mode in self._YOLO_MODES and old_mode not in self._YOLO_MODES:
-            if self.ai_engine:
-                self.ai_engine.reload_model()
+        # NO HARDWARE WORK HERE. switch_mode runs on whichever thread saw the
+        # press — either GPIO listener, the SimBtn worker, or an HTTP thread —
+        # and it used to load/unload the NPU model inline. That put a C call
+        # that holds the GIL on the button thread, racing the AI thread's own
+        # camera open/close. Two failures came out of it, both measured:
+        #   * the load blocked on the engine lock the AI thread was holding
+        #     across a cvitek VI close, and the whole interpreter wedged — no
+        #     log, no heartbeat, audio looping one phrase until power was cut;
+        #   * when release() won the race, self.ai_engine was already None for
+        #     the orchestrator but still bound on the button thread, so the
+        #     load allocated an NPU model nobody referenced. 24 loads against
+        #     20 releases over 92 switches: four leaks, on a 128MB no-swap board.
+        # The model now follows the camera on the AI loop thread (see
+        # _sync_engine_to_mode), which is the one thread allowed to touch the
+        # sensor at all. Everything left in this method is pure state + audio.
+        # No flag is needed: _sync_engine_to_mode is idempotent and runs every
+        # tick, and _mode_event below already wakes the loop immediately.
 
         # Remember it, so a device configured with boot_mode="last" comes back
-        # where the user left it.
+        # where the user left it. Persisted, not just held in RAM: cfg.set()
+        # alone never reaches flash, so boot_mode="last" resumed whatever was
+        # in config.json from the previous write rather than the real last mode.
         try:
             cfg.set("last_mode", new_mode)
+            cfg.save_async()
         except Exception:
             pass
 
@@ -649,11 +689,26 @@ class Orchestrator:
                     f"Button listener active on {pin} (active-low)",
                     module="Orchestrator",
                 )
+                last_poll = time.monotonic()
                 while self._running:
+                    now  = time.monotonic()
+                    # Gap since the previous poll. The loop paces itself at
+                    # 20ms, so anything far above that means this thread was
+                    # not scheduled — almost always because a C call (camera
+                    # open, NPU load) was holding the GIL. Press timing taken
+                    # across such a gap is fiction, so it is not trusted below.
+                    stalled   = (now - last_poll) > _BTN_STALL_S
+                    last_poll = now
+
                     v = btn.value()
                     if last == 1 and v == 0:        # falling edge = pressed
-                        press_start = time.monotonic()
+                        press_start = now
                         self._note_button_down(role, press_start)
+                        # Debounce the PRESS edge too. Only the release edge
+                        # used to settle, so contact bounce on the way down
+                        # could register as two presses for one push.
+                        time.sleep(_BTN_DEBOUNCE_S)
+                        last_poll = time.monotonic()
                     elif last == 0 and v == 1:      # rising edge = released
                         eaten = self._note_button_up(role)
                         # Only fire if we actually observed the press. If the
@@ -662,22 +717,56 @@ class Orchestrator:
                         # otherwise dur is measured from a bogus start and fires
                         # a phantom long-press (e.g. dismissing onboarding).
                         if press_start is not None and not eaten:
-                            dur = time.monotonic() - press_start
-                            long_press = dur >= cfg.get("button_longpress_s", 1.0)
-                            handler(long_press)
+                            dur = now - press_start
+                            if stalled:
+                                # We cannot know when the finger actually left
+                                # the pad, only that we were frozen across it.
+                                # Resolve to SHORT: a wrong short press cycles
+                                # the mode, which one more press undoes, while
+                                # a wrong long press re-speaks the URL or
+                                # dismisses onboarding — states the user cannot
+                                # easily get back out of.
+                                long_press = False
+                                self.logger.warn(
+                                    f"{role} press timing crossed a "
+                                    f"{now - press_start:.1f}s stall — treated "
+                                    f"as a short press",
+                                    module="Orchestrator",
+                                )
+                            else:
+                                long_press = dur >= cfg.get("button_longpress_s", 1.0)
+                            # An exception here used to escape the while loop
+                            # and kill this listener thread for good: the
+                            # physical button went dead until reboot, silently.
+                            # The web path always survived the same exception,
+                            # which is exactly backwards for the input a blind
+                            # user actually has in their hand.
+                            try:
+                                handler(long_press)
+                            except Exception as he:
+                                self.logger.error(
+                                    f"{role} button handler failed: {he}",
+                                    module="Orchestrator",
+                                )
                         press_start = None
-                        time.sleep(0.05)            # debounce settle
+                        time.sleep(_BTN_DEBOUNCE_S)  # debounce settle
+                        last_poll = time.monotonic()
                     elif v == 0 and press_start is not None:
                         # Still held — the other button may be held too.
-                        self._poll_chord()
+                        try:
+                            self._poll_chord()
+                        except Exception as ce:
+                            self.logger.warn(f"chord poll failed: {ce}",
+                                             module="Orchestrator")
                     last = v
                     time.sleep(0.02)
             except Exception as e:
                 # Leaving the loop with this button still marked down would let
                 # the OTHER button, held alone, satisfy the chord test forever.
                 self._note_button_up(role)
-                self.logger.warn(
-                    f"GPIO button unavailable ({pin}): {e}",
+                self.logger.error(
+                    f"GPIO button listener for {pin} STOPPED: {e} — "
+                    f"this button is dead until restart",
                     module="Orchestrator",
                 )
 
@@ -819,7 +908,11 @@ class Orchestrator:
             self._volume_until = 0.0
         # One flash write per session instead of one per tap: cfg.set() already
         # made each step audible (AudioManager re-reads audio_volume on every
-        # playback), so this save only has to survive a reboot.
+        # playback), so this save only has to survive a reboot. SYNCHRONOUS on
+        # purpose: closing the mode is the durability point, and stop() relies
+        # on it to persist a level the user set moments before shutdown. It runs
+        # once per session, not once per tap — the per-tap writes are the ones
+        # that go through save_async().
         cfg.save()
         if not quiet and self.audio_manager:
             self.audio_manager.queue_cue("chime_vol_exit.wav")
@@ -846,24 +939,40 @@ class Orchestrator:
         self._exit_volume_mode(gen)
 
     def _volume_step(self, direction: int):
-        """One press inside volume mode: step, confirm, hold the mode open."""
-        cur = cfg.get("audio_volume", 80)
-        new = self.step_volume(
-            cur, direction,
-            step=cfg.get("volume_step", 10),
-            lo=cfg.get("volume_button_min", 20),
-            hi=cfg.get("volume_button_max", 100),
-        )
-        if new != cur:
-            # set(), not update(): the next playback reads cfg directly, so the
-            # step is audible at once; the disk write waits for the exit.
-            cfg.set("audio_volume", new)
-        # Still adjusting — push the idle timeout back.
-        timeout = self._volume_timeout_s()
+        """One press inside volume mode: step, confirm, hold the mode open.
+
+        The read-modify-write is under _btn_lock. The two GPIO listeners are
+        independent threads, so MODE-down and ACTION-up arriving together could
+        both read the same starting level and one step was silently lost.
+        """
         with self._btn_lock:
-            if self._volume_until > 0.0:
-                self._volume_until = time.monotonic() + timeout
-        self.note_user_interaction(timeout + 2.0)
+            cur = cfg.get("audio_volume", 80)
+            new = self.step_volume(
+                cur, direction,
+                step=cfg.get("volume_step", 10),
+                lo=cfg.get("volume_button_min", 20),
+                hi=cfg.get("volume_button_max", 100),
+            )
+            if new != cur:
+                cfg.set("audio_volume", new)
+        if new != cur:
+            # The cfg.set() happened under the lock above so the next playback
+            # reads the new level at once. save_async() coalesces the flash
+            # write off this thread, so a step that lands in the timer's exit
+            # window is still durable — such a step used to change RAM only and
+            # was lost on reboot — without ever blocking a button on flash I/O.
+            cfg.save_async()
+        # Still adjusting — push the idle timeout back, but ONLY for a press
+        # that actually moved something. Re-arming on a no-op press meant a
+        # user parked at the floor, pressing MODE and hearing nothing change,
+        # held the mode open forever with every press — and could never press
+        # their way back out to the mode button they were looking for.
+        timeout = self._volume_timeout_s()
+        if new != cur:
+            with self._btn_lock:
+                if self._volume_until > 0.0:
+                    self._volume_until = time.monotonic() + timeout
+            self.note_user_interaction(timeout + 2.0)
         if self.audio_manager:
             if new == cur:
                 cue = "chime_vol_limit.wav"
@@ -890,13 +999,30 @@ class Orchestrator:
         if which not in ("mode", "action", "chord"):
             return False
         try:
-            self._sim_btn_q.put_nowait((which, bool(long_press)))
+            # Capture the modal state AT PRESS TIME. The worker used to test
+            # _in_volume_mode() when it finally dequeued, so a press made while
+            # volume mode was open — but handled after the 5s timeout closed it
+            # — silently changed meaning from "quieter" to "next mode". Under a
+            # mash the queue is seconds deep, so this was routine, and from the
+            # user's side the device simply did the wrong thing.
+            self._sim_btn_q.put_nowait(
+                (which, bool(long_press), self._in_volume_mode())
+            )
             return True
         except queue.Full:
             self.logger.warn(
                 "Simulated button dropped — worker busy (queue full)",
                 module="Orchestrator",
             )
+            # Tell the USER, not just the log. A dropped press was silent on the
+            # device: the only sign was text on a web page, which is exactly the
+            # thing the person holding this cannot read. A distinct cue is the
+            # difference between "it ignored me" and "it is busy".
+            if self.audio_manager:
+                try:
+                    self.audio_manager.queue_cue("chime_busy.wav")
+                except Exception:
+                    pass
             return False
 
     def _sim_button_worker(self):
@@ -907,7 +1033,7 @@ class Orchestrator:
         """
         while self._running:
             try:
-                which, long_press = self._sim_btn_q.get(timeout=0.5)
+                which, long_press, was_volume = self._sim_btn_q.get(timeout=0.5)
             except queue.Empty:
                 continue
             try:
@@ -919,9 +1045,9 @@ class Orchestrator:
                 if which == "chord":
                     self._toggle_volume_mode()
                 elif which == "mode":
-                    self._on_button(long_press)
+                    self._on_button(long_press, in_volume=was_volume)
                 else:
-                    self._on_action_button(long_press)
+                    self._on_action_button(long_press, in_volume=was_volume)
             except Exception as e:
                 self.logger.warn(
                     f"Simulated button '{which}' failed: {e}",
@@ -939,6 +1065,19 @@ class Orchestrator:
             w = 6.0
         self._suppress_det_until = time.monotonic() + w
 
+    def loop_healthy(self, stale_after_s: float = 45.0) -> bool:
+        """Whether the AI loop has ticked recently enough to count as alive.
+
+        This is the liveness signal the hardware watchdog pets from. It is
+        deliberately about the LOOP, not about the engine: idle mode has no
+        engine at all, and a loop that dies in idle used to look identical to
+        a healthy one.
+        """
+        try:
+            return (time.monotonic() - self._loop_beat) < float(stale_after_s)
+        except Exception:
+            return True
+
     def detection_audio_suppressed(self) -> bool:
         """True while detection alerts should stay silent (post-interaction)."""
         return time.monotonic() < self._suppress_det_until
@@ -955,12 +1094,19 @@ class Orchestrator:
             self.audio_manager.user_barge_in("chime_press.wav")
         self.note_user_interaction()
 
-    def _on_button(self, long_press: bool):
-        """Route a completed MODE-button press based on onboarding state."""
+    def _on_button(self, long_press: bool, in_volume: Optional[bool] = None):
+        """Route a completed MODE-button press based on onboarding state.
+
+        `in_volume` is the modal state as it was WHEN THE PRESS HAPPENED. The
+        GPIO listeners call the handler immediately and pass None, so the live
+        check below applies; the queued web path passes what it captured at
+        enqueue time, because a press can sit in the queue long enough for the
+        volume-mode timeout to change its meaning underneath it.
+        """
         # Volume mode owns both buttons while it is open, and answers with its
         # own cue — so this returns before the generic press chime, which would
         # otherwise play at the OLD volume and muddle the level being judged.
-        if self._in_volume_mode():
+        if self._in_volume_mode() if in_volume is None else in_volume:
             self._volume_step(-1)                     # MODE = quieter
             return
         self._press_cue()
@@ -982,7 +1128,8 @@ class Orchestrator:
         else:
             self.switch_mode(self.next_mode(self.mode))
 
-    def _on_action_button(self, long_press: bool):
+    def _on_action_button(self, long_press: bool,
+                          in_volume: Optional[bool] = None):
         """
         ACTION button: on-demand capture (1 press = 1 API call).
 
@@ -991,8 +1138,12 @@ class Orchestrator:
 
         Inert during onboarding to avoid confusing first-boot; steps the volume
         up instead while volume mode is open.
+
+        `in_volume` — see _on_button: the modal state as it was when the press
+        happened, so a queued press cannot be re-read against a mode that has
+        since timed out.
         """
-        if self._in_volume_mode():
+        if self._in_volume_mode() if in_volume is None else in_volume:
             self._volume_step(+1)                     # ACTION = louder
             return
         self._press_cue()
@@ -1106,27 +1257,95 @@ class Orchestrator:
             self.watchdog.register(
                 "ai_engine",
                 timeout_s=cfg.WATCHDOG_TIMEOUT_S,
-                restart_fn=self.ai_engine.reload,
+                # NOT ai_engine.reload. That runs on the Watchdog thread and
+                # begins with release() -> _cam.close(), putting a SECOND
+                # thread into the cvitek VI open/close path — which the AI loop
+                # may be inside at that very moment. Observed on hardware: a
+                # mode mash stopped the heartbeat during a teardown, the
+                # watchdog fired reload, and the board reset. The watchdog may
+                # only ASK; the AI thread does the work.
+                restart_fn=self._request_engine_restart,
             )
+
+    def _request_engine_restart(self):
+        """Watchdog callback. Sets a flag; touches NO hardware.
+
+        Runs on the Watchdog thread, which must never enter the camera path —
+        exactly one thread (the AI loop) is allowed there. If the AI loop is
+        wedged inside a C call this request simply never gets picked up, which
+        is the honest outcome: no Python code can recover that, and the SoC
+        hardware watchdog is the only thing that can.
+        """
+        self._engine_restart_requested = True
+        self.logger.warn(
+            "AI engine heartbeat missed — restart requested (will run on the "
+            "AI loop thread)",
+            module="Orchestrator",
+        )
+
+    def _service_engine_restart_request(self):
+        """Honour a watchdog restart request. AI-LOOP THREAD ONLY."""
+        if not self._engine_restart_requested:
+            return
+        self._engine_restart_requested = False
+        if self.ai_engine is None:
+            return
+        self.logger.warn("Restarting AI engine on the AI loop thread",
+                         module="Orchestrator")
+        self._release_aural_engine()
+        self._start_aural_engine()
+
+    def _sync_engine_to_mode(self, mode: str):
+        """Make the NPU model match the mode. AI-LOOP THREAD ONLY.
+
+        Coalescing lives here, and it is the whole point: the loop asks "should
+        the model be loaded for the mode I am in NOW?", so ten mode presses
+        during one camera open collapse into at most one load and one release
+        instead of ten open/close cycles queued behind each other. Only a mode
+        that actually changed the answer costs anything.
+        """
+        engine = self.ai_engine
+        if engine is None:
+            return
+        want = mode in self._YOLO_MODES
+        try:
+            if want:
+                engine.reload_model()
+            else:
+                engine.release_model()
+        except Exception as e:
+            self.logger.warn(f"Model sync failed for mode {mode}: {e}",
+                             module="Orchestrator")
 
     def _release_aural_engine(self):
         """Let go of the camera + NPU. AI-LOOP THREAD ONLY.
 
         Same invariant as the collection-mode handoff: every camera open/close
-        happens on this one thread, and the watchdog is unregistered first so
-        it cannot reload the engine (→ reopen the camera) behind our back.
+        happens on this one thread.
+
+        The watchdog entry is now dropped AFTER release() returns, not before.
+        Unregistering first left the single most dangerous call in the program —
+        the cvitek VI close, which is where the device was observed to wedge —
+        as the one window with no supervision at all: that unregister plus the
+        `ai_engine is not None` gate on the loop's own heartbeat meant nothing
+        was being watched while the camera closed. Note this only makes the
+        hang VISIBLE; it cannot recover it, because the blocked close holds the
+        GIL and no Python thread runs. Actual recovery is the SoC hardware
+        watchdog armed in main.py.
         """
         if self.ai_engine is None:
             return
-        if self.watchdog:
-            try:
-                self.watchdog.unregister("ai_engine")
-            except Exception:
-                pass
+        engine = self.ai_engine
         try:
-            self.ai_engine.release()
+            engine.release()
         except Exception as e:
             self.logger.warn(f"AIEngine release failed: {e}", module="Orchestrator")
+        finally:
+            if self.watchdog:
+                try:
+                    self.watchdog.unregister("ai_engine")
+                except Exception:
+                    pass
         self.ai_engine = None
         self.detections = []
 
@@ -1234,6 +1453,14 @@ class Orchestrator:
                 if self.watchdog and self.ai_engine is not None:
                     self.watchdog.heartbeat("ai_engine")
 
+                # Liveness of the LOOP, independent of whether an engine exists.
+                # The heartbeat above is gated on ai_engine, which is None for
+                # the whole of idle — the default boot mode — so a loop that
+                # died or wedged in idle was indistinguishable from a healthy
+                # one. This timestamp is what the hardware watchdog pets from,
+                # so idle is now supervised like every other mode.
+                self._loop_beat = time.monotonic()
+
                 # Clear the mode-change event at the top of each cycle
                 self._mode_event.clear()
 
@@ -1291,6 +1518,15 @@ class Orchestrator:
                                      module="Orchestrator")
                     self._release_aural_engine()
 
+                # A watchdog restart request is honoured HERE, on the one thread
+                # allowed to open or close the camera.
+                self._service_engine_restart_request()
+
+                # The NPU model follows the camera, on this same thread. Moved
+                # here out of switch_mode: see the comment there for the freeze
+                # and the leak this ordering fixes.
+                self._sync_engine_to_mode(mode)
+
                 started = time.monotonic()
                 if mode == "explorer":
                     from modes.explorer_mode import run_explorer_tick
@@ -1324,6 +1560,23 @@ class Orchestrator:
                                  module="Orchestrator")
                 self._mode_event.wait(timeout=0.5)
 
+    def _say_no_camera(self):
+        """Answer a capture request made in a mode that has no camera.
+
+        idle is the DEFAULT boot mode and holds no engine, so pressing ACTION
+        on a freshly powered device did nothing at all: no sound, no log line
+        the user could hear, nothing. For someone who cannot see a screen that
+        is indistinguishable from a dead device, and the natural response is to
+        press harder and more often — which is how the mash that wedged the
+        unit started. Say what is actually true instead.
+        """
+        if not self.audio_manager:
+            return
+        try:
+            self.audio_manager.queue_system("kamera_belum_aktif_tekan_mode_dulu")
+        except Exception:
+            pass
+
     def _handle_command(self, cmd_obj: dict):
         cmd  = cmd_obj.get("cmd")
         data = cmd_obj.get("data", {})
@@ -1346,11 +1599,15 @@ class Orchestrator:
         elif cmd == "qris":
             if self.ai_engine:
                 self.ai_engine.trigger_qris_scan()
+            else:
+                self._say_no_camera()
             self.note_user_interaction()   # keep the result audible after the scan
 
         elif cmd == "describe":
             if self.ai_engine:
                 self.ai_engine.trigger_scene_description()
+            else:
+                self._say_no_camera()
             self.note_user_interaction()   # keep the description audible after it returns
 
         elif cmd == "update_config":
@@ -1375,7 +1632,18 @@ class Orchestrator:
         # -> dc.stop() at this very moment. A second thread entering that path
         # leaks the VI channel ("No buffer space available" → SIGSEGV on the next
         # start), and a blind sleep races a slow _cam.read() the same way.
-        self._ai_loop_stopped.wait(timeout=2.0)
+        # Long enough to actually cover the slowest legitimate tick. At 2.0s
+        # this "wait" expired during any cloud describe and the shutdown walked
+        # straight into the camera teardown below WHILE the AI thread was still
+        # reading frames — the exact two-threads-in-the-VI-path bug the comment
+        # above exists to prevent.
+        handshake_ok = self._ai_loop_stopped.wait(timeout=20.0)
+        if not handshake_ok:
+            self.logger.warn(
+                "AI loop did not stop in 20s — leaving the camera to the "
+                "process exit rather than closing it under a live read",
+                module="Orchestrator",
+            )
         # Stop dataset capture if we're in Mode Ambil Data — otherwise its camera
         # (VI channel) and CSV file leak on shutdown and the next start SIGSEGVs
         # in the C camera layer. stop() is a no-op if capture isn't running.
@@ -1387,7 +1655,7 @@ class Orchestrator:
         # Release the camera explicitly. Without this, a SIGTERM/kill leaves the
         # cvitek VI channel allocated ("No buffer space available"), and the next
         # start SIGSEGVs in the C camera layer before Python can catch it.
-        if self.ai_engine:
+        if self.ai_engine and handshake_ok:
             try:
                 self.ai_engine.release()
             except Exception:

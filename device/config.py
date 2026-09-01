@@ -6,6 +6,7 @@ Loaded from /root/config.json at startup; updatable at runtime via companion API
 import os
 import json
 import threading
+import time
 from pathlib import Path
 
 from utils import scene_prompt
@@ -171,6 +172,22 @@ _DEFAULTS: dict = {
     # Written on every mode switch so boot_mode="last" has something to read.
     "last_mode":                "explorer",
     "watchdog_timeout_s":       5.0,
+    # ── SoC hardware watchdog (utils/hw_watchdog.py) ─────────────────────────
+    # The in-process watchdog above cannot survive the failure this device
+    # actually hits: a camera/NPU teardown that blocks inside a C call holds
+    # the GIL, so every Python thread — the watchdog included — stops. Only
+    # silicon can recover that. Confirmed on a MaixCAM Lite: /dev/watchdog
+    # exists, arms on open, and really does reset the board.
+    # DEFAULT OFF, deliberately. Arming an auto-reset that nobody has watched
+    # run turns a rare hang into a possible reboot loop, which is worse. Switch
+    # it on per unit after observing one run with it armed.
+    "hw_watchdog_enabled":      False,
+    "hw_watchdog_timeout_s":    60,
+    "hw_watchdog_pet_s":        2.0,
+    # How stale the AI-loop heartbeat may get before petting stops. Generous:
+    # one tick legitimately covers a cloud describe, so this must sit well
+    # above the slowest healthy tick or a busy device would reset itself.
+    "hw_watchdog_stale_s":      45.0,
     # ── Hardware buttons (active-low to GND; internal pull-up, no resistor) ───
     # The GPIO listener enables PULL_UP, so any free standard GPIO works — wire
     # each button: leg1 → pad, leg2 → GND. Pads that can NEVER work:
@@ -190,7 +207,11 @@ _DEFAULTS: dict = {
     # How long both buttons must be held together before volume mode opens.
     # Long enough that a clumsy two-finger grab is not a chord, short enough
     # that it is not a wait.
-    "button_chord_hold_s":      0.6,
+    # MUST stay above button_longpress_s. At the old 0.6s the chord fired
+    # BEFORE a long press could complete, so any long press where a finger
+    # brushed the second pad opened volume mode instead — and the chord eats
+    # the release, so the long press the user wanted never happened at all.
+    "button_chord_hold_s":      1.5,
     # Volume mode closes itself this long after the last step, so the buttons
     # are never left in a state the user has to remember to leave.
     "volume_mode_timeout_s":    5.0,
@@ -385,6 +406,11 @@ class Config:
 
     def __init__(self):
         self._lock = threading.RLock()
+        # Separate from _lock: _lock guards the dict (held briefly), _save_lock
+        # guards the write+replace to disk (held across flash I/O). Sharing one
+        # would make every reader wait out an fsync.
+        self._save_lock    = threading.RLock()
+        self._save_pending = False
         self._data: dict = dict(_DEFAULTS)
         self._load()
 
@@ -451,18 +477,56 @@ class Config:
         mid-save; _load() then falls back to defaults and the next save makes
         the loss permanent. Writing to a temp file and atomically replacing
         guarantees the on-disk config is always a complete, valid document.
+
+        TWO writers, one tmp path. Every caller used to write the SAME
+        "config.json.tmp": a volume step saving from the button thread while
+        the web UI saved from an HTTP thread had one process os.replace() a
+        file the other was still streaming into, publishing a truncated
+        document as the live config. That costs device_token and every
+        encrypted API key on the unit — recoverable only by re-provisioning.
+        The tmp name is now unique per writer, and _save_lock serializes the
+        replace so the last writer always publishes a whole document.
         """
         with self._lock:
             data = dict(self._data)
-        try:
-            tmp = str(_CONFIG_PATH) + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump(data, f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, _CONFIG_PATH)
-        except Exception:
-            pass
+        tmp = "%s.tmp.%d.%d" % (_CONFIG_PATH, os.getpid(),
+                                threading.get_ident())
+        with self._save_lock:
+            try:
+                with open(tmp, "w") as f:
+                    json.dump(data, f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, _CONFIG_PATH)
+            except Exception:
+                try:
+                    os.unlink(tmp)
+                except Exception:
+                    pass
+
+    def save_async(self, delay_s: float = 1.0):
+        """Coalesced background save — for callers on a latency-critical thread.
+
+        A button press must never wait on flash. Repeated calls inside `delay_s`
+        collapse into one write, so mashing the volume chord cannot turn into a
+        burst of concurrent saves (the exact pattern that used to race on the
+        shared tmp path above).
+        """
+        with self._save_lock:
+            if self._save_pending:
+                return
+            self._save_pending = True
+
+        def _run():
+            try:
+                time.sleep(delay_s)
+            except Exception:
+                pass
+            with self._save_lock:
+                self._save_pending = False
+            self.save()
+
+        threading.Thread(target=_run, daemon=True, name="CfgSave").start()
 
     # ─── Read / Write ─────────────────────────────────────────────────────────
 

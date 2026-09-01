@@ -189,6 +189,23 @@ CHIMES = {
     # message from the error bell (something you asked for failed).
     "chime_vol_limit": ("wood", [(880.0, 0, 130, 1.00),
                                  (880.0, 75, 190, 0.85)]),
+    # "I heard you, but I am too busy to take it." A press dropped because the
+    # button queue was full used to be completely silent on the device — the
+    # only sign was a line of text on a web page, which is exactly what the
+    # person holding this cannot read. Measured on hardware: 14% of presses
+    # during a mash were dropped this way. Deliberately dull and low, clearly
+    # not the bright confirmation tick, so "busy" never reads as "done".
+    #
+    # Distinguished by RHYTHM, not pitch. Everything below ~700 Hz is under the
+    # speaker's rolloff and comes out as a buzz, so "low and dull" is not
+    # available on this hardware; and the pitch space is already crowded — a
+    # single tap is the press tick, a rising or falling pair is a volume step,
+    # a same-pitch pair is the volume limit. Three fast taps is the one rhythm
+    # nothing else uses, at the bottom of the audible register so it still
+    # reads as a refusal rather than a confirmation.
+    "chime_busy":     ("wood", [(740.0, 0, 80, 0.85),
+                                (740.0, 90, 80, 0.70),
+                                (740.0, 180, 140, 0.55)]),
 }
 
 

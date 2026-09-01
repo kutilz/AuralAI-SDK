@@ -32,6 +32,25 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# ── Freeze forensics ─────────────────────────────────────────────────────────
+# The camera/NPU teardown is a C call that holds the GIL. When it blocks in the
+# cvitek VI driver the ENTIRE interpreter stops — no log line, no heartbeat, no
+# traceback, and the audio already handed to the DMA loops one phrase forever.
+# faulthandler's handler runs at the C level and walks the interpreter state
+# directly, so `kill -USR1 <pid>` still prints every thread's Python stack while
+# the GIL is held. It is the only way to see where a freeze actually happened.
+# Costs nothing until the signal arrives.
+try:
+    import faulthandler
+    import signal as _signal
+    _fh_log = open("/tmp/aural_faulthandler.log", "a", buffering=1)
+    faulthandler.enable(file=_fh_log, all_threads=True)
+    if hasattr(_signal, "SIGUSR1"):
+        faulthandler.register(_signal.SIGUSR1, file=_fh_log,
+                              all_threads=True, chain=False)
+except Exception:
+    pass
+
 # ── NOTE: Heavy imports are deferred into main() — see docstring above. ──────
 
 
@@ -73,14 +92,21 @@ def _boot_cue_fast():
         except Exception:
             pass
 
-        # Case 3: PCM missing OR older than the WAV it came from → regenerate
-        # (the only self-heal path). The mtime half matters after an audio
-        # deploy: a fresh auralai_menyala.wav sitting next to last release's
-        # .pcm would otherwise greet with the OLD recording forever, because
-        # this fast path never looks at the WAV at all.
+        # Case 3: PCM missing OR not built from the WAV sitting next to it →
+        # regenerate (the only self-heal path). The mtime half matters after an
+        # audio deploy: a fresh auralai_menyala.wav sitting next to last
+        # release's .pcm would otherwise greet with the OLD recording forever,
+        # because this fast path never looks at the WAV at all.
+        #
+        # Same equality test as audio_manager._pcm_is_fresh, inlined because
+        # this path must not import audio_manager (that is the whole point of
+        # the fast path). A "pcm older than wav" test would call every cache
+        # entry stale here: the clock reads 1970 until NTP lands, so a .pcm
+        # rebuilt on a previous boot is stamped behind a WAV deployed in 2026.
         wav_path = "/root/audio/auralai_menyala.wav"
         try:
-            pcm_stale = os.path.getmtime(pcm_path) < os.path.getmtime(wav_path)
+            delta = os.path.getmtime(pcm_path) - os.path.getmtime(wav_path)
+            pcm_stale = abs(delta) > 2.0
         except OSError:
             pcm_stale = False        # no WAV to compare against → leave it be
         if pcm_stale or not os.path.exists(pcm_path):
@@ -121,6 +147,25 @@ def _boot_cue_fast():
             time.sleep(0.02)
     except Exception:
         pass  # Fast path failed silently
+
+
+def _mark_boot_ready():
+    """Record time-to-ready against the monotonic boot clock.
+
+    The wall clock cannot measure boot: it starts at the epoch and NTP jumps it
+    forward at an unpredictable point *during* boot, so two log timestamps can
+    sit in different time bases and their difference is meaningless.
+    /proc/uptime never jumps. Written where the user-visible milestone is --
+    every thread up, the device about to announce itself -- and read back by
+    tools/boot_timeline.py. Best-effort: a failure here must never affect boot.
+    """
+    try:
+        with open("/proc/uptime") as f:
+            uptime = f.read().split()[0]
+        with open("/tmp/aural_boot_ready", "w") as f:
+            f.write(uptime)
+    except (OSError, IndexError):
+        pass
 
 
 def main():
@@ -237,6 +282,21 @@ def main():
     ).start()
     logger.ok("AI loop started", module="Main")
 
+    # ── SoC hardware watchdog ────────────────────────────────────────────────
+    # Armed only when the unit opts in (cfg["hw_watchdog_enabled"]). This is
+    # the ONLY mechanism that can recover the device from a camera/NPU teardown
+    # that blocks inside a C call: that hang holds the GIL, so no Python
+    # supervisor — including core/watchdog.py — ever runs again. Started after
+    # the AI loop so there is a real heartbeat to judge, and fed from the
+    # loop's own tick rather than from anything engine-specific, because idle
+    # mode has no engine. See utils/hw_watchdog.py for why it defaults to off.
+    from utils import hw_watchdog as _hw_watchdog
+    _stale_s = cfg.get("hw_watchdog_stale_s", 45.0)
+    hw_wd = _hw_watchdog.start_if_enabled(
+        cfg, logger=logger,
+        is_alive_fn=lambda: orchestrator.loop_healthy(_stale_s),
+    )
+
     # ── Spoken-URL onboarding (last; waits for WiFi + web + audio) ─────────────
     announcer = OnboardingAnnouncer(orchestrator=orchestrator, logger=logger)
     orchestrator.onboarding = announcer
@@ -255,6 +315,15 @@ def main():
         logger.info(f"Cloud client → {cfg.CLOUD_BASE_URL}", module="Main")
 
     logger.info("All threads running. Press Ctrl+C to stop.", module="Main")
+    _mark_boot_ready()
+
+    # Pre-warm the speech backend AFTER boot-ready is stamped, so its cost never
+    # lands in the boot-latency number — and, more to the point, never lands on
+    # the user's first describe. See AudioManager.warm_speech_stack.
+    try:
+        orchestrator.audio_manager.warm_speech_stack(delay_s=2.0)
+    except Exception as e:
+        logger.debug(f"Speech pre-warm not started: {e}", module="Main")
 
     # ── Main thread: keep alive, handle shutdown ───────────────────────────────
     # Treat SIGTERM (from `kill` / tools/run.py --stop) like Ctrl+C so the camera
@@ -270,6 +339,10 @@ def main():
             time.sleep(1)
     except KeyboardInterrupt:
         logger.info("Shutdown requested", module="Main")
+        # Disarm FIRST and with the magic close: a deliberate stop must not
+        # leave the board to reset itself one timeout after we exit.
+        if hw_wd is not None:
+            hw_wd.stop(disarm=True)
         orchestrator.stop()
         watchdog.stop()
         health.stop()
