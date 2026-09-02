@@ -598,9 +598,16 @@ let voiceEditingUntil = 0;
 function renderVoices(){
   const seg = $('voiceSeg');
   if (!seg || seg.childElementCount) return;    // build once
+  // Build the onclick with escaped quotes. Written as "\'" + v + "\'" — an
+  // earlier edit lost the backslashes, which closed the string literal early
+  // and made the WHOLE inline <script> fail to parse. Nothing on this page ran
+  // after that: no poll(), so the header sat on "menghubungkan…" forever, and
+  // every button was a dead ReferenceError. A parse error takes the entire
+  // block, not just the broken line, which is why one voice-picker typo
+  // silenced the whole console.
   seg.innerHTML = VOICES.map(v =>
     '<button class="btn" id="vc_' + v + '" aria-pressed="false" ' +
-    'onclick="testVoice('' + v + '')">' + v + '</button>').join('');
+    'onclick="testVoice(\'' + v + '\')">' + v + '</button>').join('');
 }
 
 function applyVoice(){
@@ -941,7 +948,14 @@ function onGapInputDisplayOnly(v){
 
 async function poll(){
   try{
-    const r = await tfetch('/status', {}, 2500);
+    // 8s, not 2.5s. Opening the camera or loading the NPU model is a C call
+    // that holds the GIL for a couple of seconds, so /status legitimately
+    // stalls that long right after a mode switch. At 2.5s every mode change
+    // printed "koneksi terputus — mencoba ulang…" at a caregiver whose device
+    // was perfectly healthy, training them to distrust the one indicator they
+    // have. Slower failure detection is the right trade: a real outage still
+    // shows up, just one poll later.
+    const r = await tfetch('/status', {}, 8000);
     const s = await r.json();
     if (!connected){ setConn(true); logLine('terhubung ke perangkat','ok'); }
     applyState(s);
