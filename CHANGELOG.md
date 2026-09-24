@@ -2,6 +2,94 @@
 
 ---
 
+## [Device — button pairing, keypair recovery, MaixPy 4.5.1 compat] — 2026-09-24
+
+Ported from the I-Sora product repo (same software, different brand).
+
+- **Pair with the ACTION button.** While unpaired, a short ACTION press calls
+  `POST /api/pair/confirm` (`core/cloud.py:confirm_pairing`) and binds the device
+  to the phone waiting on `/app/tambah`. The spoken prompt is now
+  `identity.pairing_button_phrase` (no more spelled-out code); the code is still
+  minted as a fallback for a broken button. Failed presses are answered aloud
+  (`OnboardingAnnouncer.PAIR_REPLIES`, pre-generated WAVs in `audio/system_*`).
+- **Unpair is heard.** A relay that no longer knows the device (released in the
+  app) flips `paired` back to False and re-announces the pairing prompt.
+- **Heartbeat** now reports `setup_completed`, `ai_ready` and `local_ip_url`.
+- **E2E keypair self-heal.** `crypto_box.keypair_status()` detects a private key
+  that can no longer be decrypted (or does not match the public key);
+  `ensure_keypair` regenerates it instead of silently ignoring every API key.
+- **`utils/nn_compat.py`** — one detector-class picker (YOLO11/YOLOv8/YOLOv5
+  from the `.mud`) shared by `AIEngine` and the benchmark suite, which used to
+  hardcode `nn.YOLO11` and could not start on MaixPy 4.5.1.
+- **Benchmarks:** T1 queue-latency consumer no longer exits after the first
+  sample (was reporting ~-11800 ms); T4 stability logs per-interval latency
+  percentiles, load average and RAM, and appends every sample to CSV.
+- **`tools/run.py`:** init script + legacy rc.local block honour a
+  `/root/t451` MaixPy 4.5.1 override (no-op when absent) and run `python3 -u`.
+- **Web palette:** the ported web app keeps AuralAI's teal tokens and a teal
+  sound-ripple mark; I-Sora's indigo/amber identity was not carried over.
+
+---
+
+## [Web — PWA, Settings app, and camera simulator] — 2026-09-11
+
+Reshapes `web/` around two jobs: an installable app for people who own a
+device, and a phone-camera simulator for people who don't yet.
+
+### Installable app (PWA)
+
+- `app/manifest.ts`, `public/sw.js`, `lib/pwa.ts`, `components/InstallCard.tsx`,
+  `public/icons/*` (regenerate: `node scripts/gen-icons.mjs`).
+- Service worker: network-first navigation with an `/offline` fallback,
+  cache-first for build output and media, and a separate long-lived bucket for
+  the ~6 MB TFJS model so a deploy doesn't force a re-download.
+- `start_url` is `/app` — the installed app opens on your devices, not on
+  marketing copy.
+
+### `/app` — a phone-Settings-style shell
+
+- New route groups: `app/(marketing)` keeps `Nav`/`Footer`; `app/(shell)`
+  carries its own `AppBar` per screen.
+- `/app` device list → `/app/[id]` device settings → `/app/tambah` pairing.
+- `/pair` and `/dashboard` are now redirects (the `?code=` deep link still
+  lands on the spoken-code tab).
+- `DELETE /api/devices/:id` releases a device from the account.
+
+### Pairing: automatic first
+
+- `GET|POST /api/pair/nearby` — devices and phones that reach the relay from
+  the same public IP are on the same WiFi, so unclaimed devices "here" can be
+  listed and claimed with one tap. Offered **only** when exactly one candidate
+  is visible, because CGNAT can share an IPv4 between households; anything
+  ambiguous falls back to QR or the spoken code.
+- `devices.net_hash` stores a **keyed hash**, never a raw IP (`lib/net.ts`).
+  The same signal drives `same_network`, which decides whether the app offers a
+  device's LAN control link.
+- `device/core/cloud.py` heartbeat now also reports `local_ip_url`; the app
+  prefers it over `<name>.local`, which Chrome on Android cannot resolve.
+
+### `/simulasi` — the device, run on a phone camera
+
+- `lib/sim/` ports the real decision code: `vision.ts` ←
+  `utils/logger.position_from_bbox` + `utils/distance.band`; `announce.ts` ←
+  `utils/announce_policy.decide`; `constants.ts` ← `config.NAV_OBJECTS`, the
+  thresholds, and `audio_manager`'s phrase maps.
+- COCO-SSD (TensorFlow.js) stands in for YOLO11n; WebAudio panned chimes and
+  Web Speech (`id-ID`) stand in for the pre-rendered WAVs.
+- One big tap-target emulates the device's single button (short = re-read,
+  long = describe). QRIS mode reads EMVCo tag 59. Debug panel shows boxes,
+  tier, `area_ratio`, and inference time.
+- "Jelaskan sekitar" uses the user's own OpenAI/Gemini key, kept in
+  `localStorage` and sent straight to the provider — never through AuralAI.
+
+### Schema
+
+Re-run `web/supabase/schema.sql` (idempotent): adds `devices.net_hash`, a
+partial index for the nearby lookup, and column-level `UPDATE` grants so a
+signed-in browser can no longer overwrite `secret_hash` or `pubkey`.
+
+---
+
 ## [Phase 4 — Companion Redesign] — 2026-05-21
 
 Implements the `design_handoff_auralai_redesign/` package: split the operator

@@ -231,32 +231,13 @@ class AIEngine:
     def _detector_class(model_path):
         """Pick the maix.nn class that matches the .mud and exists in this build.
 
-        MaixPy 4.5.x ships YOLOv5/YOLOv8 only — `nn.YOLO11` was added later — so
-        hardcoding one class breaks on whichever image the unit happens to run.
-        The .mud's `model_type` is the source of truth; fall back to whatever the
-        build actually exposes.
+        Delegates to utils.nn_compat so the benchmark suite shares the choice:
+        the benchmarks used to hardcode `nn.YOLO11` and could not start at all on
+        a MaixPy 4.5.1 unit (YOLOv5/YOLOv8 only) while the app ran fine on the
+        very same image.
         """
-        wanted = ""
-        try:
-            with open(model_path) as f:
-                for line in f:
-                    if line.strip().startswith("model_type"):
-                        wanted = line.split("=", 1)[1].strip().lower()
-                        break
-        except Exception:
-            pass
-
-        preferred = {
-            "yolo11": ("YOLO11", "YOLOv8", "YOLOv5"),
-            "yolov8": ("YOLOv8", "YOLO11", "YOLOv5"),
-            "yolov5": ("YOLOv5", "YOLOv8", "YOLO11"),
-        }.get(wanted, ("YOLO11", "YOLOv8", "YOLOv5"))
-
-        for name in preferred:
-            cls = getattr(nn, name, None)
-            if cls is not None:
-                return cls, name
-        raise RuntimeError("maix.nn exposes no usable YOLO class")
+        from utils.nn_compat import detector_class
+        return detector_class(model_path)
 
     # ─── Resource management (called by Orchestrator on mode switch) ──────────
 

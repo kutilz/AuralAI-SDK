@@ -82,6 +82,21 @@ SYSTEM_EVENTS = {
     "api_tidak_tersedia":           "API tidak tersedia",
     "gagal_menganalisis":           "gagal menganalisis",
     "gagal_memindai":               "gagal memindai, coba lagi",
+    # Answers to an ACTION press while the device is still unpaired (see
+    # core/onboarding.OnboardingAnnouncer.PAIR_REPLIES). Pre-generated for the
+    # same reason as the connection cues above: "belum ada internet" is exactly
+    # the moment gTTS cannot be reached, and the rest need to land instantly so
+    # the press feels answered rather than ignored.
+    "belum_ada_internet_sambungkan_perangkat_ke_wifi_dulu":
+        "Belum ada internet. Sambungkan perangkat ke WiFi dulu.",
+    "belum_ada_ponsel_yang_menunggu_buka_halaman_tambah_perangkat_dulu_lalu_tekan_lagi":
+        "Belum ada ponsel yang menunggu. Buka halaman tambah perangkat dulu, lalu tekan lagi.",
+    "ada_lebih_dari_satu_ponsel_yang_menunggu_tutup_salah_satunya_lalu_tekan_lagi":
+        "Ada lebih dari satu ponsel yang menunggu. Tutup salah satunya, lalu tekan lagi.",
+    "perangkat_ini_sudah_terhubung":
+        "Perangkat ini sudah terhubung.",
+    "gagal_menghubungkan_coba_tekan_lagi":
+        "Gagal menghubungkan. Coba tekan lagi.",
 }
 
 

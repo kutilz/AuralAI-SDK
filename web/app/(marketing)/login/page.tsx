@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import LoginClient from "./LoginClient";
 
-export const metadata = { title: "Masuk — AuralAI" };
+export const metadata = { title: "Cadangkan ke email — AuralAI" };
 
 export default function LoginPage() {
   return (

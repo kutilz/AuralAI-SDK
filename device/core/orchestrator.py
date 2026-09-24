@@ -1133,11 +1133,17 @@ class Orchestrator:
         """
         ACTION button: on-demand capture (1 press = 1 API call).
 
-          short → describe scene (explorer/context) or scan QRIS (qris mode)
+          short → pair with the waiting phone while the device is unpaired,
+                  otherwise describe scene (explorer/context) or scan QRIS
           long  → re-speak the last result the user heard
 
-        Inert during onboarding to avoid confusing first-boot; steps the volume
-        up instead while volume mode is open.
+        The pairing binding takes the button only until the device is claimed,
+        and it is what makes setup need no typing and no sight: the person is
+        holding the device, so pressing it is both the easiest gesture available
+        and better proof of ownership than the code it replaced.
+
+        Otherwise inert during onboarding to avoid confusing first-boot; steps
+        the volume up instead while volume mode is open.
 
         `in_volume` — see _on_button: the modal state as it was when the press
         happened, so a queued press cannot be re-read against a mode that has
@@ -1147,6 +1153,15 @@ class Orchestrator:
             self._volume_step(+1)                     # ACTION = louder
             return
         self._press_cue()
+        # Pairing first: an unpaired device has nothing useful to describe yet,
+        # and this is checked before `onboarding_active` because the user may
+        # have long-pressed "sudah paham" (which clears it) and only then gone
+        # to fetch their phone.
+        if not long_press:
+            cloud = getattr(self, "cloud", None)
+            if cloud is not None and cloud.wants_button_pair():
+                cloud.confirm_pairing()
+                return
         onboarding_active = (
             not cfg.get("setup_completed", False)
             and not cfg.get("url_ack", False)

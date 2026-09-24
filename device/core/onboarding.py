@@ -54,9 +54,13 @@ class OnboardingAnnouncer:
         if am is None:
             return
         try:
-            if self.cloud_active and self.pairing_code:
-                from utils.identity import pairing_phrase
-                text = pairing_phrase(self.pairing_code, cfg.get("cloud_base_url", ""))
+            if self.cloud_active:
+                # The button prompt, not the code: see identity.pairing_button_phrase.
+                # A code may well be in hand (cloud.py still mints one as a
+                # fallback), but reciting six characters at someone who then has
+                # to type them is exactly the friction this replaced.
+                from utils.identity import pairing_button_phrase
+                text = pairing_button_phrase(cfg.get("cloud_base_url", ""))
                 label = "onboard_pair"
             else:
                 from utils.identity import onboarding_phrase
@@ -68,11 +72,36 @@ class OnboardingAnnouncer:
         am.queue(text, priority=NORMAL, label=label, cooldown=3.0)
 
     def set_pairing_code(self, code: str, speak: bool = True):
-        """core/cloud.py calls this once it has a fresh code to announce."""
+        """core/cloud.py calls this once it has a fresh code in hand.
+
+        The code itself is no longer spoken — what `speak` triggers is the button
+        prompt (see announce). The code is kept so the hub's typed-code path
+        still resolves for a device whose ACTION button is broken.
+        """
         self.cloud_active = True
         self.pairing_code = code
         if speak:
             self.announce(force=True)
+
+    # Spoken answers to an ACTION press while unpaired. Keyed by the `reason`
+    # core/cloud.py gets back from /api/pair/confirm, so the person holding the
+    # device learns what happened without looking at anything.
+    PAIR_REPLIES = {
+        "no_session": "Belum ada ponsel yang menunggu. Buka halaman tambah perangkat dulu, lalu tekan lagi.",
+        "ambiguous": "Ada lebih dari satu ponsel yang menunggu. Tutup salah satunya, lalu tekan lagi.",
+        "already_paired": "Perangkat ini sudah terhubung.",
+        "offline": "Belum ada internet. Sambungkan perangkat ke WiFi dulu.",
+    }
+
+    def announce_pair_result(self, reason: str):
+        """core/cloud.py calls this when a button press did not pair the device."""
+        am = getattr(self.orch, "audio_manager", None)
+        if am is None:
+            return
+        text = self.PAIR_REPLIES.get(reason)
+        if not text:
+            text = "Gagal menghubungkan. Coba tekan lagi."
+        am.queue(text, priority=NORMAL, label=f"pair_{reason}", cooldown=0)
 
     def announce_paired(self):
         """core/cloud.py calls this when the device gets claimed by an account."""

@@ -145,18 +145,46 @@ def _spell_ip(ip: str) -> str:
 
 
 def _spoken_host(base_url: str) -> str:
-    """'https://auralai.app' → 'auralai titik app' (intelligible by ear)."""
+    """'https://aural-ai-six.vercel.app' → 'aural strip ai strip six
+    titik vercel titik app' (intelligible by ear)."""
     host = (base_url or "").split("//")[-1].split("/")[0]
     host = host.split(":")[0]  # drop port
     return host.replace(".", " titik ").replace("-", " strip ")
 
 
-def pairing_phrase(code: str, base_url: str = "https://auralai.app") -> str:
+def pairing_button_phrase(base_url: str = "https://aural-ai-six.vercel.app") -> str:
+    """
+    The default spoken pairing prompt: open the site, then press ACTION.
+
+    This is what the user hears instead of six spelled-out characters. Pressing a
+    button on hardware you are already holding proves ownership at least as well
+    as a typed code, and it asks nothing of someone who cannot read a screen —
+    no listening-and-transcribing, no sighted helper. `pairing_phrase` below is
+    kept for the code path, which survives as a fallback but is no longer spoken.
+
+    Single string so it caches as exactly one TTS wav.
+    """
+    site = _spoken_host(base_url) or "aural strip ai strip six titik vercel titik app"
+    return " ".join([
+        "AuralAI siap.",
+        f"Untuk menghubungkan, buka {site} di ponsel,",
+        "pilih tambah perangkat,",
+        "lalu tekan tombol aksi pada alat ini sekali.",
+        "Tekan tombol mode sebentar untuk mengulang pesan ini,",
+        "atau agak lama bila sudah selesai.",
+    ])
+
+
+def pairing_phrase(code: str, base_url: str = "https://aural-ai-six.vercel.app") -> str:
     """
     Spoken sentence telling a helper how to pair via the web hub using a code.
     Returned as a single string so it caches as exactly one TTS wav.
+
+    No longer the default prompt — see `pairing_button_phrase`. Kept because the
+    typed code still works on the hub and is the only path left if the ACTION
+    button is physically broken.
     """
-    site = _spoken_host(base_url) or "auralai titik app"
+    site = _spoken_host(base_url) or "aural strip ai strip six titik vercel titik app"
     spelled = _spell(code)
     return " ".join([
         "AuralAI siap.",

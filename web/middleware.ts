@@ -32,5 +32,8 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|audio/|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)"],
+  // Static assets, the service worker and the manifest never need a session.
+  matcher: [
+    "/((?!_next/static|_next/image|favicon.ico|audio/|icons/|sw.js|manifest.webmanifest|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+  ],
 };

@@ -3,12 +3,13 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { t } from "@/lib/i18n";
+import Logo from "./Logo";
 
 const LINKS = [
-  { href: "/pair", label: t.nav.pair },
+  { href: "/simulasi", label: t.nav.sim },
   { href: "/docs", label: t.nav.docs },
   { href: "/preview", label: t.nav.preview },
-  { href: "/dashboard", label: t.nav.dashboard },
+  { href: "/app", label: t.nav.app },
 ];
 
 export default function Nav() {
@@ -16,8 +17,11 @@ export default function Nav() {
   return (
     <header className="site-header">
       <div className="container bar">
-        <Link href="/" className="brand">
-          Aural<span>AI</span>
+        <Link href="/" className="brand" aria-label={`${t.app} — beranda`}>
+          <Logo size={28} />
+          <span className="brand-wm">
+            Aural<span>AI</span>
+          </span>
         </Link>
         <nav className="site-nav" aria-label="Navigasi utama">
           {LINKS.map((l) => {

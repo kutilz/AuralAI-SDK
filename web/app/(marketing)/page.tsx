@@ -10,11 +10,11 @@ export default function Home() {
           <h1>{t.hero.title}</h1>
           <p className="lead">{t.hero.lead}</p>
           <div className="cta-row">
-            <Link href="/pair" className="btn btn--primary btn--lg">
-              {t.hero.cta_pair}
+            <Link href="/simulasi" className="btn btn--primary btn--lg">
+              {t.hero.cta_sim}
             </Link>
-            <Link href="/docs" className="btn btn--lg">
-              {t.hero.cta_docs}
+            <Link href="/app" className="btn btn--lg">
+              {t.hero.cta_app}
             </Link>
           </div>
         </div>
@@ -45,12 +45,15 @@ export default function Home() {
               </div>
             ))}
           </div>
+          <p className="sub" style={{ marginTop: "var(--s-6)" }}>
+            {t.how.fallback} <Link href="/docs/menghubungkan">Lihat ketiga caranya</Link>.
+          </p>
           <div className="cta-row" style={{ marginTop: "var(--s-8)" }}>
-            <Link href="/pair" className="btn btn--primary btn--lg">
-              {t.hero.cta_pair}
+            <Link href="/app" className="btn btn--primary btn--lg">
+              {t.hero.cta_app}
             </Link>
-            <Link href="/preview" className="btn btn--lg">
-              {t.nav.preview}
+            <Link href="/docs" className="btn btn--lg">
+              {t.hero.cta_docs}
             </Link>
           </div>
         </div>
