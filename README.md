@@ -3,6 +3,8 @@
 > On-device development platform for AI-powered visual assistants running on the **Sipeed MaixCAM**.  
 > Designed to help visually impaired users recognize their surroundings via audio.
 
+<p align="center"><img src="docs/images/render-hero.jpg" alt="Render 3D AuralAI: modul kamera terpasang di gagang kacamata" width="720"></p>
+
 ---
 
 ## Features
@@ -137,6 +139,121 @@ python companion/run_desktop.py            # Optional: Simulate with webcam
 ```
 
 On your MaixCAM, set `AURAL_COMPANION_HOST` to your **PC's IPv4 address** (Wi‑Fi/Ethernet, not WSL IP), then run `python aural_maix.py` — see [docs/setup.md](docs/setup.md) for details.
+
+---
+
+## Perakitan & Instalasi Unit (MaixCAM / MaixCAM Lite)
+
+Panduan untuk merakit satu alat AuralAI dari nol: solder, flash kartu SD, lalu cek.
+Detail lengkap (fungsi tombol, alur setup tanpa layar, troubleshooting) ada di
+[`docs/hardware_assembly.md`](docs/hardware_assembly.md).
+
+<p align="center">
+  <img src="docs/images/render-explode.jpg" alt="Exploded view modul AuralAI" width="720"><br>
+  <sub>Exploded view: casing dan tutup, board MaixCAM, lensa kamera dan bracket depan, dua tombol, klip ke gagang kacamata.
+  Baterai dan board charger di render adalah desain lanjutan; build sekarang masih pakai daya USB-C.</sub>
+</p>
+
+<table><tr>
+  <td align="center"><img src="docs/images/render-module.jpg" alt="Modul AuralAI tampak samping" width="380"><br><sub>Modul utuh: lensa di depan, tombol di sisi</sub></td>
+  <td align="center"><img src="docs/images/render-mount.jpg" alt="Modul terpasang di gagang kacamata" width="380"><br><sub>Terpasang di gagang kacamata lewat klip</sub></td>
+</tr></table>
+
+### 1. Komponen per unit
+
+| Komponen                        | Catatan                                                    |
+| ------------------------------- | ---------------------------------------------------------- |
+| Sipeed MaixCAM / MaixCAM Lite   | Kamera GC4653 bawaan; LCD tidak dipakai                    |
+| Kartu microSD ≥ 8 GB            | Satu kartu per unit                                        |
+| Speaker mini 8Ω, ≤ 2W           | Suara TTS + chime (amplifier sudah ada di board)           |
+| Push-button momentary × 2       | **MODE** dan **AKSI**                                      |
+| Kabel USB-C + adaptor 5V ≥ 1A   | Sumber daya. Baterai belum didukung                        |
+| Kabel tipis + solder            |                                                            |
+
+### 2. Solder
+
+```
+Tombol MODE  kaki 1 ──── pad A28   (sisi kanan, label "GPIOA 28 / UART2 TX")
+Tombol MODE  kaki 2 ──── GND
+Tombol AKSI  kaki 1 ──── pad A29   (sisi kanan, label "GPIOA 29 / UART2 RX")
+Tombol AKSI  kaki 2 ──── GND       (boleh satu kabel GND bersama)
+Speaker      merah  ──── SPK+
+Speaker      hitam  ──── SPK-
+```
+
+- Tombol **tanpa resistor**: active-low dengan pull-up internal (lepas = HIGH, tekan = LOW).
+- Pad ini sama dengan default `button_pin_mode` / `button_pin_action` di
+  [`device/config.py`](device/config.py), jadi tidak perlu ubah setelan.
+- Pastikan kabel FPC kamera terpasang rapat dan pengunci konektornya tertutup.
+  Kalau longgar, sensor tidak terdeteksi (i2c timeout di log).
+
+> ⚠️ **Jangan pakai pad ini untuk tombol:**
+>
+> | Pad         | Alasan                                                              |
+> | ----------- | ------------------------------------------------------------------- |
+> | **A14**     | LED onboard, diklaim kernel sebagai output → tombol tak terbaca     |
+> | **P18–P23** | Jalur SDIO modul WiFi → tombol tak terbaca dan WiFi putus           |
+> | **A26**     | WiFi EN → menekan tombol bisa mematikan WiFi                        |
+> | **A15**     | Pernah terukur stuck-LOW di satu unit. Cek multimeter dulu          |
+>
+> Pad cadangan: **A22 / A23 / A24 / A25**. Kalau pindah, ubah `button_pin_mode` /
+> `button_pin_action` di `/root/config.json` lalu restart app.
+> Mod Bluetooth butuh resistor 0Ω di A18/A19/A28/A29. Kalau dipakai, tombol harus
+> pindah ke A22–A25 dulu.
+
+Pinout board: [wiki Sipeed MaixCAM](https://wiki.sipeed.com/hardware/en/maixcam/index.html).
+
+### 3. Flash kartu SD (Windows)
+
+Semua unit memakai satu **image siap-flash** yang sama. Isinya firmware, program
+AuralAI, suara, WiFi, dan key terenkripsi. Image ini **tidak disimpan di repo**
+karena berukuran ~1.6 GB dan berisi kredensial. Minta file `aural-lite-<tanggal>.img`
+ke maintainer.
+
+Identitas unit (nama `aural-XXXX`, `device_token`, kunci per-unit) dibuat oleh
+masing-masing unit saat boot pertama: nama dari MAC wlan0, `/device_key` dari UID SoC.
+Karena itu banyak unit dari image yang sama tidak bentrok.
+
+Buka PowerShell **sebagai Administrator**:
+
+```powershell
+cd tools\provisioning
+python flash_sd.py --list                               # cari nomor disk kartu SD
+python flash_sd.py <path>\aural-lite-<tanggal>.img <N>  # tulis + verifikasi md5, ~3-5 menit
+```
+
+- `flash_sd.py` menolak disk sistem, disk non-USB/SD/MMC, dan disk di luar 4–256 GB.
+  Tetap **cek ulang nomor disk** setiap kali, karena nomornya bisa berubah.
+- Kalau Windows menawarkan "Format disk", pilih **Cancel**.
+- Setelah tertulis "OK md5 …", kartu boleh dicabut.
+
+### 4. Boot pertama & cek
+
+1. Pasang kartu ke board, lalu colok USB-C ke daya yang stabil.
+2. Sekitar 2 detik kemudian terdengar chime "AuralAI menyala". Boot pertama lebih lama
+   (resize partisi dan pembuatan cache suara). Tunggu ±90 detik.
+3. Buka dashboard dengan salah satu cara:
+   - **WiFi**: unit otomatis tersambung ke jaringan yang tersimpan di image. Buka
+     `http://aural-XXXX.local:8080`, atau tekan **MODE agak lama** untuk mendengar
+     alamatnya.
+   - **USB**: colok ke laptop. Unit muncul sebagai adaptor jaringan RNDIS dan menjadi
+     DHCP server. IP unit = gateway adaptor itu (mis. `10.x.x.1`). SSH `root` / `root`.
+4. Cek kesehatan unit (read-only, satu sesi SSH; butuh `pip install paramiko`):
+   ```bash
+   python tools/provisioning/verify_unit.py <host-atau-ip>
+   ```
+   Yang dicek: identitas, WiFi, proses app, suhu, RAM, config, error di log, dan `/status`.
+5. Tes tombol: tekan **MODE**. Harus terdengar "tick" lalu nama mode.
+   Tekan **AKSI** di mode Jelajah untuk mendeskripsikan apa yang ada di depan kamera.
+6. Catat `device_key` dan nama `aural-XXXX` di label unit.
+
+**Ganti WiFi tanpa reflash:** colok kartu ke PC, lalu edit
+`wpa_supplicant.conf` (atau `wifi.ssid` / `wifi.pass`) di partisi FAT `boot`.
+Simpan dengan line ending **LF**, bukan CRLF.
+
+**Update program di unit yang sudah jalan:** `python tools/run.py --host <ip> --autostart`
+(lihat `python tools/run.py --help`). Restart app hanya via SIGTERM / init script.
+Jangan `kill -9`, karena watchdog hardware aktif.
 
 ---
 
@@ -285,8 +402,9 @@ OPENAI_MODEL      = "gpt-4o-mini"
 
 ## Hardware
 
-- **Device:** Sipeed MaixCAM (regular variant)
-- **Camera:** Built-in sensor (320×224 resolution, RGB888 format)
+- **Device:** Sipeed MaixCAM (regular variant) or MaixCAM Lite
+- **Camera:** Built-in GC4653 sensor (320×224 default; MaixCAM Lite image runs 320×240 + `yolov8n.mud`)
+- **Assembly & flashing:** see [Perakitan & Instalasi Unit](#perakitan--instalasi-unit-maixcam--maixcam-lite)
 - **Network:** WiFi connection (HTTP server running on port 8080)
 - **Storage:** MicroSD card for models, audio files, and system logs
 

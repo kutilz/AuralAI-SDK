@@ -12,13 +12,13 @@ interaksi lewat **suara (speaker)** dan **dua tombol** (AKSI + MODE).
 
 ## 1. Daftar komponen
 
-| Komponen | Catatan |
-|---|---|
-| Sipeed MaixCAM (varian reguler) | Layar LCD sudah dilepas — tidak apa-apa, perangkat full-audio |
-| Speaker mini 8Ω (≤2W) | Untuk output suara TTS + chime |
+| Komponen                           | Catatan                                                               |
+| ---------------------------------- | --------------------------------------------------------------------- |
+| Sipeed MaixCAM (varian reguler)    | Layar LCD sudah dilepas — tidak apa-apa, perangkat full-audio         |
+| Speaker mini 8Ω (≤2W)              | Untuk output suara TTS + chime                                        |
 | Tombol push-button (momentary) × 2 | **AKSI** (capture/describe/scan) + **MODE** (ganti mode / alamat web) |
-| Kabel USB-C + adaptor 5V (≥1A) | Sumber daya utama (pengganti baterai sementara) |
-| Kabel jumper tipis / solder | Untuk speaker & tombol |
+| Kabel USB-C + adaptor 5V (≥1A)     | Sumber daya utama (pengganti baterai sementara)                       |
+| Kabel jumper tipis / solder        | Untuk speaker & tombol                                                |
 
 ---
 
@@ -59,7 +59,7 @@ Perangkat pakai **2 tombol**: **AKSI** (capture sesuai permintaan) dan **MODE**
 **tombol mana pun cukup disambung active-low ke GND — tanpa resistor eksternal**.
 
 > ⚠️ **Pad yang TIDAK BOLEH dipakai tombol** (terverifikasi di unit nyata, 2026-07-01):
->
+> 
 > - **A14** — itu **LED onboard** MaixCAM; kernel meng-klaimnya sebagai output
 >   (`led-user`), jadi tombol di A14 tidak akan pernah terbaca. (Versi lama
 >   panduan ini menyarankan A14 — salah.)
@@ -71,11 +71,11 @@ Perangkat pakai **2 tombol**: **AKSI** (capture sesuai permintaan) dan **MODE**
 
 **Pilihan pad (terverifikasi jalan):**
 
-| Fungsi | Pad default | Catatan |
-|---|---|---|
-| **MODE** | **A28** | Sisi kanan (label `GPIOA 28 / UART2 TX`); aman selama UART2/JTAG tidak dipakai |
-| **AKSI** | **A29** | Sisi kanan (label `GPIOA 29 / UART2 RX`); aman selama UART2/JTAG tidak dipakai |
-| Alternatif | A22 / A23 / A24 / A25 | Boleh dipakai bila SPI4/eMMC tidak dipakai |
+| Fungsi     | Pad default           | Catatan                                                                        |
+| ---------- | --------------------- | ------------------------------------------------------------------------------ |
+| **MODE**   | **A28**               | Sisi kanan (label `GPIOA 28 / UART2 TX`); aman selama UART2/JTAG tidak dipakai |
+| **AKSI**   | **A29**               | Sisi kanan (label `GPIOA 29 / UART2 RX`); aman selama UART2/JTAG tidak dipakai |
+| Alternatif | A22 / A23 / A24 / A25 | Boleh dipakai bila SPI4/eMMC tidak dipakai                                     |
 
 > ℹ️ **A15** seharusnya juga bisa, tapi pada unit #1 pad ini terukur *stuck LOW*
 > (ketarik ke ground terus walau pull-up aktif) — kemungkinan short di
@@ -104,21 +104,21 @@ ground yang sama.
 
 **Fungsi tombol AKSI:**
 
-| Kondisi | Tekan sebentar | Tekan agak lama (≥1 dtk) |
-|---|---|---|
-| **Setup pertama** (URL belum di-ack) | — (nonaktif) | — (nonaktif) |
-| **Mode Jelajah / Deskripsi** | Jelaskan apa yang di depan (1 tekan = 1 panggilan API) | Ucapkan ulang hasil terakhir |
-| **Mode QRIS** | Pindai kode pembayaran | Ucapkan ulang hasil terakhir |
+| Kondisi                              | Tekan sebentar                                         | Tekan agak lama (≥1 dtk)     |
+| ------------------------------------ | ------------------------------------------------------ | ---------------------------- |
+| **Setup pertama** (URL belum di-ack) | — (nonaktif)                                           | — (nonaktif)                 |
+| **Mode Jelajah / Deskripsi**         | Jelaskan apa yang di depan (1 tekan = 1 panggilan API) | Ucapkan ulang hasil terakhir |
+| **Mode QRIS**                        | Pindai kode pembayaran                                 | Ucapkan ulang hasil terakhir |
 
 > Hemat token: gambar **hanya dikirim saat tombol AKSI ditekan** — tidak pernah
 > streaming terus-menerus.
 
 **Fungsi tombol MODE:**
 
-| Kondisi | Tekan sebentar | Tekan agak lama (≥1 dtk) |
-|---|---|---|
-| **Setup pertama** (URL belum di-ack) | Ulangi pengumuman alamat web | "Sudah paham" → berhenti mengumumkan |
-| **Pemakaian normal** | Ganti mode (Jelajah → Deskripsi → QRIS) | **Ucapkan ulang alamat web** |
+| Kondisi                              | Tekan sebentar                          | Tekan agak lama (≥1 dtk)             |
+| ------------------------------------ | --------------------------------------- | ------------------------------------ |
+| **Setup pertama** (URL belum di-ack) | Ulangi pengumuman alamat web            | "Sudah paham" → berhenti mengumumkan |
+| **Pemakaian normal**                 | Ganti mode (Jelajah → Deskripsi → QRIS) | **Ucapkan ulang alamat web**         |
 
 > Jadi pengguna/pendamping selalu bisa dengar alamat webnya lagi kapan saja:
 > tekan tombol **MODE agak lama**.
@@ -192,6 +192,7 @@ Karena layar dilepas, alamat web ditemukan lewat **2 cara**:
 
 - **Autostart saat boot:** `python tools/run.py --host <ip> --autostart`
   (status: `--autostart-status`, batal: `--autostart-off`).
+  
   > ⚙️ **Penting (device tanpa layar):** karena LCD dicopot, **launcher MaixApp
   > tidak bisa jalan**, jadi mekanisme `auto_start.txt` bawaan **tidak berfungsi**.
   > Tool ini otomatis pakai **`/etc/rc.local`** (dijalankan `/etc/init.d/S99local`
