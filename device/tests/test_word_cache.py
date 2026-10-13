@@ -160,3 +160,37 @@ def test_assemble_trims_each_word_when_threshold_set():
     out = assemble_words([s16(0, 5000, 0), s16(0, 6000, 0)],
                          gap_samples=0, trim_threshold=1000, trim_margin_samples=0)
     assert out == s16(5000, 6000)
+
+
+# ── cached_count: honest telemetry independent of the warm list ──────────────
+
+def test_cap_reports_real_cache_hits_not_zero():
+    # The cap fires on FULL cache hits too, so plan.missing (which lists every
+    # token for background warming) says nothing about how warm the cache is.
+    # Deriving the hit count from it reported a fully-warm cache as 0-cached on
+    # every long description — the metric used to judge whether caching works.
+    cache = {"kasur": "k.pcm", "di": "d.pcm", "kiri": "ki.pcm", "pintu": "p.pcm"}
+    plan = plan_utterance("kasur di kiri pintu", cache.get, max_words=3)
+    assert plan.mode == "synth_sentence"
+    assert plan.cached_count == 4
+
+
+def test_cap_reports_partial_cache_hits():
+    cache = {"kasur": "k.pcm", "kiri": "ki.pcm"}
+    plan = plan_utterance("kasur di kiri pintu", cache.get, max_words=3)
+    assert plan.cached_count == 2
+
+
+def test_miss_reports_only_the_hits():
+    cache = {"kasur": "k.pcm", "di": "d.pcm"}
+    plan = plan_utterance("kasur di kiri", cache.get)
+    assert plan.mode == "synth_sentence"
+    assert plan.missing == ["kiri"]
+    assert plan.cached_count == 2
+
+
+def test_concat_reports_every_word_cached():
+    cache = {"kasur": "k.pcm", "di": "d.pcm", "kiri": "ki.pcm"}
+    plan = plan_utterance("kasur di kiri", cache.get)
+    assert plan.mode == "concat"
+    assert plan.cached_count == 3

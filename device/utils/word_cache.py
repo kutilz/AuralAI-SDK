@@ -24,8 +24,11 @@ from collections import namedtuple
 # How to render one utterance.
 #   mode="concat"          -> play word_paths back-to-back (zero network)
 #   mode="synth_sentence"  -> speak the whole text via gTTS (a word was missing)
-# `missing` lists words to warm in the background regardless of mode.
-Plan = namedtuple("Plan", ["mode", "word_paths", "missing"])
+# `missing` lists words to warm in the background regardless of mode — it is a
+# WARM LIST, not a miss count: when the max_words cap fires it holds every token
+# even on a full cache hit. `cached_count` is the honest hit count for telemetry.
+Plan = namedtuple("Plan", ["mode", "word_paths", "missing", "cached_count"])
+Plan.__new__.__defaults__ = (0,)
 
 # Indonesian scene text is ASCII; split on word chars, drop punctuation/case.
 # A hyphenated token like "kiri-atas" splits into "kiri","atas" — fine, each is
@@ -56,7 +59,12 @@ def plan_utterance(text: str, lookup, max_words: int = 0) -> Plan:
     if max_words > 0 and len(toks) > max_words:
         seen = set()
         deduped = [w for w in toks if not (w in seen or seen.add(w))]
-        return Plan("synth_sentence", [], deduped)
+        # The cap fires on FULL cache hits too, so `missing` here says nothing
+        # about how warm the cache is. Count the real hits separately or the
+        # dashboard reports a fully-warm cache as 0-cached on every long
+        # description — the exact metric used to judge whether caching works.
+        return Plan("synth_sentence", [], deduped,
+                    sum(1 for w in toks if lookup(w)))
     paths = []
     missing = []
     for w in toks:
@@ -68,8 +76,8 @@ def plan_utterance(text: str, lookup, max_words: int = 0) -> Plan:
     if missing:
         seen = set()
         deduped = [w for w in missing if not (w in seen or seen.add(w))]
-        return Plan("synth_sentence", [], deduped)
-    return Plan("concat", paths, [])
+        return Plan("synth_sentence", [], deduped, len(paths))
+    return Plan("concat", paths, [], len(paths))
 
 
 class WordCache:

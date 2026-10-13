@@ -30,6 +30,8 @@ try:
 except ImportError:
     MAIX_OK = False
 
+from utils import orientation
+
 CAPTURES_ROOT   = "/root/captures"
 STORAGE_MIN_MB  = 50          # stop jika free space < 50MB
 DEFAULT_INTERVAL= 1.0         # detik antar capture
@@ -64,6 +66,9 @@ class DataCollector:
         # Config (bisa diubah via web UI)
         self.interval_s = DEFAULT_INTERVAL
         self.quality    = DEFAULT_QUALITY
+        # Residual rotation left for software after the sensor ISP took what it
+        # could (see _apply_orientation). Read on the capture thread only.
+        self._rot_software = 0
 
         # Session stats
         self.session_start  = None   # wall-clock (time.time) — used for filenames/CSV
@@ -271,12 +276,27 @@ class DataCollector:
         except Exception as e:
             return None, str(e)
 
+    # ── Camera orientation ──────────────────────────────────────────
+    def _apply_orientation(self):
+        """Mirror AIEngine's split: a half turn goes to the sensor ISP for
+        free, anything else stays with us as a software rotate."""
+        from config import cfg
+        rot = cfg.CAMERA_ROTATION
+        if rot == 180 and orientation.set_hw_flip(self._cam, True, True):
+            self._rot_software = 0
+        else:
+            orientation.set_hw_flip(self._cam, False, False)
+            self._rot_software = rot
+        if rot:
+            self._info(f"Rotasi kamera: {orientation.rotation_label(rot)}")
+
     # ── Capture Loop ────────────────────────────────────────────────
     def _capture_loop(self):
         # Init camera di dalam thread
         if MAIX_OK:
             try:
                 self._cam = camera.Camera(640, 480)
+                self._apply_orientation()
                 self._info("Camera OK (640×480)")
             except Exception as ex:
                 self._warn(f"Camera error: {ex} → synthetic mode")
@@ -337,6 +357,12 @@ class DataCollector:
         try:
             if self._cam and MAIX_OK:
                 img     = self._cam.read()
+                # Same camera_rotation the assistive pipeline uses. A dataset
+                # shot through a sideways/upside-down mount trains a model on
+                # an orientation the device will never see again, so correct it
+                # at capture time rather than hoping someone re-rotates 4000
+                # JPEGs later. 0 (and the ISP-handled half turn) is a no-op.
+                img     = orientation.rotate_image(img, self._rot_software)
                 jpg_img = img.to_format(image.Format.FMT_JPEG)
                 jpg_bytes = bytes(jpg_img.to_bytes())
             else:

@@ -124,7 +124,10 @@ function SetupApp() {
       if (audioModeFromQuery) payload.audio_mode = audioModeFromQuery;
       if (s.device_name.trim()) payload.device_name = s.device_name.trim();
       await apiPost("/config", payload);
-      window.location.href = "/";
+      // "/" is the blind user's button console since the home-page re-route —
+      // the pendamping's dashboard lives at /companion, which is what this
+      // step's own copy ("kembali ke beranda pendamping") promises.
+      window.location.href = "/companion";
     } catch (e: unknown) {
       setS((c) => ({
         ...c,
